@@ -2,7 +2,6 @@ import sqlite3
 import pandas as pd
 import requests
 import zipfile
-import io
 import os
 import glob
 
@@ -20,12 +19,20 @@ def download_and_extract(url, name):
     # Check if we already have CSVs for this dataset
     existing_csvs = glob.glob(os.path.join(DATA_DIR, "*.csv"))
     if not existing_csvs:
-        print(f"Downloading from {url}...")
+        print(f"Streaming from {url}...")
         try:
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
-            z = zipfile.ZipFile(io.BytesIO(response.content))
-            z.extractall(DATA_DIR)
+            temp_zip = os.path.join(DATA_DIR, f"temp_{name}.zip")
+            with requests.get(url, stream=True) as r:
+                r.raise_for_status()
+                with open(temp_zip, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            
+            print(f"Download complete. Extracting {name}...")
+            with zipfile.ZipFile(temp_zip, 'r') as z:
+                z.extractall(DATA_DIR)
+            
+            os.remove(temp_zip) # Delete ZIP to save space
             print(f"Extraction for {name} complete.")
         except Exception as e:
             print(f"Error processing {name}: {e}")
@@ -101,6 +108,15 @@ def ingest():
     
     conn.commit()
     conn.close()
+
+    # CRITICAL: Clean up large CSV files to save Render disk space
+    print("Ingestion complete. Cleaning up raw CSV files...")
+    for f in all_files:
+        try:
+            os.remove(f)
+        except:
+            pass
+    print("DONE.")
 
 if __name__ == "__main__":
     ingest()
