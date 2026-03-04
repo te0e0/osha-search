@@ -56,6 +56,39 @@ def ingest():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL") # Improve concurrency
     
+    # Explicitly create tables to avoid "no such table" errors on some environments
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS inspections (
+            ACTIVITY_NR TEXT PRIMARY KEY,
+            ESTAB_NAME TEXT,
+            SITE_ADDRESS TEXT,
+            SITE_CITY TEXT,
+            SITE_STATE TEXT,
+            SITE_ZIP TEXT,
+            OPEN_DATE TEXT,
+            INSP_TYPE TEXT,
+            INSP_SCOPE TEXT,
+            UNION_STATUS TEXT,
+            SIC_CODE TEXT,
+            NAICS_CODE TEXT,
+            OWNER_TYPE TEXT,
+            CLOSE_CASE_DATE TEXT,
+            CASE_MOD_DATE TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS violations (
+            ACTIVITY_NR TEXT,
+            CITATION_ID TEXT,
+            STANDARD TEXT,
+            VIOL_TYPE TEXT,
+            INITIAL_PENALTY REAL,
+            CURRENT_PENALTY REAL,
+            ABATE_DATE TEXT,
+            FOREIGN KEY(ACTIVITY_NR) REFERENCES inspections(ACTIVITY_NR)
+        )
+    """)
+    
     all_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
     print(f"Found {len(all_files)} files. Starting chunked processing...")
     
