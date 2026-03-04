@@ -69,6 +69,7 @@ def search_inspections(
         conn.close()
 
 @app.get("/", response_class=HTMLResponse)
+@app.head("/", response_class=HTMLResponse)
 def read_root():
     return """
 <!DOCTYPE html>
@@ -251,16 +252,21 @@ def read_root():
 </html>
     """
 
-if __name__ == "__main__":
-    # Check if database exists, if not, run ingestion
+import threading
+
+def run_ingestion():
     if not os.path.exists(DB_PATH):
-        print("Database not found. Starting initial data ingestion...")
+        print("Database not found. Starting initial data ingestion in background...")
         try:
             import ingest_data
             ingest_data.ingest()
-            print("Initial ingestion complete.")
+            print("Background ingestion complete.")
         except Exception as e:
-            print(f"Failed to ingest data on startup: {e}")
+            print(f"Failed to ingest data in background: {e}")
+
+if __name__ == "__main__":
+    # Start ingestion in a background thread to avoid blocking server start
+    threading.Thread(target=run_ingestion, daemon=True).start()
             
     print("Starting dashboard server...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
