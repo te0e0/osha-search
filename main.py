@@ -83,6 +83,26 @@ def search_inspections(
     finally:
         conn.close()
 
+@app.get("/api/inspection/{activity_nr}")
+def get_inspection_detail(activity_nr: str):
+    conn = get_db_connection()
+    if not conn:
+        return {"error": "Database not ready."}
+    
+    try:
+        insp = conn.execute("SELECT * FROM inspections WHERE ACTIVITY_NR = ?", (activity_nr,)).fetchone()
+        if not insp:
+            return {"error": "Inspection not found."}
+            
+        viols = conn.execute("SELECT * FROM violations WHERE ACTIVITY_NR = ?", (activity_nr,)).fetchall()
+        
+        return {
+            "inspection": dict(insp),
+            "violations": [dict(v) for v in viols]
+        }
+    finally:
+        conn.close()
+
 @app.get("/", response_class=HTMLResponse)
 @app.head("/", response_class=HTMLResponse)
 def read_root():
@@ -175,7 +195,43 @@ def read_root():
         .badge-willful { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
         .badge-other { background: rgba(148, 163, 184, 0.2); color: #cbd5e1; }
         
+        
         .loading { text-align: center; padding: 3rem; color: var(--muted); font-style: italic; }
+
+        /* Modal Styles */
+        #modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(15, 23, 42, 0.9); backdrop-filter: blur(8px);
+            display: none; justify-content: center; align-items: center; z-index: 1000;
+            padding: 2rem;
+        }
+        .modal-content {
+            background: var(--bg); border: 1px solid rgba(255,255,255,0.1);
+            width: 100%; max-width: 900px; max-height: 90vh; overflow-y: auto;
+            border-radius: 1.5rem; padding: 2.5rem; position: relative;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 1);
+        }
+        .close-btn {
+            position: absolute; top: 1.5rem; right: 1.5rem;
+            background: none; border: none; color: var(--muted);
+            font-size: 1.5rem; cursor: pointer; border-radius: 50%;
+            width: 2.5rem; height: 2.5rem; display: flex; align-items: center; justify-content: center;
+            transition: all 0.2s;
+        }
+        .close-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+        
+        .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 2rem; margin-top: 2rem; }
+        .detail-section h3 { font-size: 0.7rem; text-transform: uppercase; color: var(--primary); margin-bottom: 0.5rem; }
+        .detail-item { margin-bottom: 1rem; }
+        .detail-label { font-size: 0.7rem; color: var(--muted); margin-bottom: 0.2rem; }
+        .detail-value { font-size: 0.9rem; font-weight: 500; }
+        
+        .violation-card {
+            background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 0.75rem; padding: 1.25rem; margin-bottom: 1rem;
+        }
+        tr.clickable { cursor: pointer; }
+        tr.clickable:hover td { background: rgba(37, 99, 235, 0.1); }
     </style>
 </head>
 <body>
@@ -220,6 +276,15 @@ def read_root():
                     <tr><td colspan="5" class="loading">Enter search criteria and click Search</td></tr>
                 </tbody>
             </table>
+        </div>
+    </div>
+
+    <div id="modal-overlay" onclick="if(event.target === this) closeModal()">
+        <div class="modal-content">
+            <button class="close-btn" onclick="closeModal()">×</button>
+            <div id="modal-body">
+                <!-- Content injected via JS -->
+            </div>
         </div>
     </div>
     <script>
@@ -268,7 +333,7 @@ def read_root():
                 }
 
                 body.innerHTML = data.results.map(row => `
-                    <tr>
+                    <tr class="clickable" onclick="showDetails('${row.ACTIVITY_NR}')">
                         <td>${new Date(row.OPEN_DATE).toLocaleDateString()}</td>
                         <td style="font-weight:600">${row.ESTAB_NAME}</td>
                         <td>${row.SITE_CITY}</td>
@@ -282,6 +347,75 @@ def read_root():
             } catch (err) {
                 body.innerHTML = `<tr><td colspan="5" class="loading">Error connecting to server. Server may be indexing data... please wait 1 minute and try again.</td></tr>`;
             }
+        }
+
+        async function showDetails(id) {
+            const overlay = document.getElementById('modal-overlay');
+            const content = document.getElementById('modal-body');
+            overlay.style.display = 'flex';
+            content.innerHTML = '<div class="loading">Loading details...</div>';
+
+            try {
+                const res = await fetch(`/api/inspection/${id}`);
+                const data = await res.json();
+                
+                if (data.error) {
+                    content.innerHTML = `<div class="loading" style="color:#f87171">${data.error}</div>`;
+                    return;
+                }
+
+                const i = data.inspection;
+                content.innerHTML = `
+                    <h2 style="margin-top:0">${i.ESTAB_NAME}</h2>
+                    <p style="color:var(--muted); font-size:0.9rem">${i.SITE_ADDRESS}, ${i.SITE_CITY}, ${i.SITE_STATE} ${i.SITE_ZIP || ''}</p>
+                    
+                    <div class="detail-grid">
+                        <div class="detail-section">
+                            <h3>Inspection Details</h3>
+                            <div class="detail-item"><div class="detail-label">Activity #</div><div class="detail-value">${i.ACTIVITY_NR}</div></div>
+                            <div class="detail-item"><div class="detail-label">Type</div><div class="detail-value">${i.INSP_TYPE || 'N/A'}</div></div>
+                            <div class="detail-item"><div class="detail-label">Scope</div><div class="detail-value">${i.INSP_SCOPE || 'N/A'}</div></div>
+                            <div class="detail-item"><div class="detail-label">Union Status</div><div class="detail-value">${i.UNION_STATUS || 'N/A'}</div></div>
+                        </div>
+                        <div class="detail-section">
+                            <h3>Dates</h3>
+                            <div class="detail-item"><div class="detail-label">Opened</div><div class="detail-value">${new Date(i.OPEN_DATE).toLocaleDateString()}</div></div>
+                            <div class="detail-item"><div class="detail-label">Case Closed</div><div class="detail-value">${i.CLOSE_CASE_DATE ? new Date(i.CLOSE_CASE_DATE).toLocaleDateString() : 'N/A'}</div></div>
+                            <div class="detail-item"><div class="detail-label">Last Modified</div><div class="detail-value">${i.CASE_MOD_DATE ? new Date(i.CASE_MOD_DATE).toLocaleDateString() : 'N/A'}</div></div>
+                        </div>
+                        <div class="detail-section">
+                            <h3>Industry</h3>
+                            <div class="detail-item"><div class="detail-label">SIC Code</div><div class="detail-value">${i.SIC_CODE || 'N/A'}</div></div>
+                            <div class="detail-item"><div class="detail-label">NAICS Code</div><div class="detail-value">${i.NAICS_CODE || 'N/A'}</div></div>
+                            <div class="detail-item"><div class="detail-label">Owner Type</div><div class="detail-value">${i.OWNER_TYPE || 'N/A'}</div></div>
+                        </div>
+                    </div>
+
+                    <h3 style="margin-top:2.5rem; text-transform:uppercase; font-size:0.7rem; color:var(--primary)">Violations (${data.violations.length})</h3>
+                    <div id="violation-list">
+                        ${data.violations.map(v => `
+                            <div class="violation-card">
+                                <div style="display:flex; justify-content:space-between; margin-bottom:0.8rem">
+                                    <span style="font-weight:600; color:var(--primary)">${v.STANDARD}</span>
+                                    <span class="badge ${v.VIOL_TYPE === 'Serious' ? 'badge-serious' : 'badge-other'}">${v.VIOL_TYPE}</span>
+                                </div>
+                                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.5rem; font-size:0.8rem">
+                                    <div><span style="color:var(--muted)">Instances:</span> ${v.NR_INSTANCES || 0}</div>
+                                    <div><span style="color:var(--muted)">Initial Penalty:</span> $${v.INITIAL_PENALTY || 0}</div>
+                                    <div><span style="color:var(--muted)">Current Penalty:</span> $${v.CURRENT_PENALTY || 0}</div>
+                                    <div><span style="color:var(--muted)">Abate Date:</span> ${v.ABATE_DATE ? new Date(v.ABATE_DATE).toLocaleDateString() : 'N/A'}</div>
+                                </div>
+                            </div>
+                        `).join('') || '<p style="color:var(--muted); font-size:0.9rem">No individual violations recorded.</p>'}
+                    </div>
+                `;
+            } catch (err) {
+                content.innerHTML = `<div class="loading" style="color:#f87171">Error fetching details.</div>`;
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('modal-overlay').style.display = 'none';
         }
     </script>
 </body>
