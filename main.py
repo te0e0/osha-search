@@ -10,18 +10,29 @@ app = FastAPI(title="Cal/OSHA Search Dashboard")
 
 DB_PATH = "osha_ca.db"
 
+# Global status for ingestion tracking
+ingestion_status = {"status": "starting", "progress": 0}
+
+@app.get("/api/status")
+def get_status():
+    return ingestion_status
+
 def get_db_connection():
     if not os.path.exists(DB_PATH):
         return None
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=20) # High timeout for concurrent writes
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.row_factory = sqlite3.Row
+        return conn
+    except:
+        return None
 
 @app.get("/api/search")
 def search_inspections(
     employer: Optional[str] = None,
     city: Optional[str] = None,
-    year: Optional[int] = None,
+    year: Optional[str] = None,
     severity: Optional[str] = None,
     standard: Optional[str] = None,
     limit: int = 50,
@@ -29,7 +40,7 @@ def search_inspections(
 ):
     conn = get_db_connection()
     if not conn:
-        return {"error": "Database not ready yet. Please wait for ingestion to complete.", "results": []}
+        return {"error": "Index still building... give it 5 minutes.", "results": []}
 
     query = """
     SELECT i.*, GROUP_CONCAT(v.STANDARD) as standards, GROUP_CONCAT(v.VIOL_TYPE) as severities
@@ -47,7 +58,7 @@ def search_inspections(
         query += " AND i.SITE_CITY LIKE ?"
         params.append(f"%{city}%")
     
-    if year:
+    if year and str(year).strip():
         query += " AND i.OPEN_DATE LIKE ?"
         params.append(f"%{year}%")
         
@@ -65,6 +76,10 @@ def search_inspections(
     try:
         df = pd.read_sql_query(query, conn, params=params)
         return {"results": df.to_dict(orient="records")}
+    except Exception as e:
+        if "no such table" in str(e).lower():
+            return {"error": "Data is still indexing... check back in 1 minute.", "results": []}
+        return {"error": f"Search failed: {str(e)}", "results": []}
     finally:
         conn.close()
 
@@ -165,6 +180,9 @@ def read_root():
 </head>
 <body>
     <div class="container">
+        <div id="status-bar" style="text-align: right; font-size: 0.7rem; color: var(--muted); margin-bottom: 0.5rem; display: none;">
+            Indexing in progress... (takes ~5 mins)
+        </div>
         <h1>Cal/OSHA Search Dashboard</h1>
         
         <div class="search-grid">
@@ -204,18 +222,36 @@ def read_root():
             </table>
         </div>
     </div>
-
     <script>
+        async function checkStatus() {
+            const bar = document.getElementById('status-bar');
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                if (data.status === 'indexing') {
+                    bar.style.display = 'block';
+                } else {
+                    bar.style.display = 'none';
+                }
+            } catch (e) {}
+        }
+        setInterval(checkStatus, 10000);
+        checkStatus();
+
         async function performSearch() {
             const body = document.getElementById('resultsBody');
             body.innerHTML = '<tr><td colspan="5" class="loading">Loading records...</td></tr>';
 
-            const params = new URLSearchParams({
-                employer: document.getElementById('employer').value,
-                city: document.getElementById('city').value,
-                year: document.getElementById('year').value,
-                standard: document.getElementById('standard').value
-            });
+            const params = new URLSearchParams();
+            const yearVal = document.getElementById('year').value;
+            const empVal = document.getElementById('employer').value;
+            const cityVal = document.getElementById('city').value;
+            const stdVal = document.getElementById('standard').value;
+
+            if (empVal) params.append('employer', empVal);
+            if (cityVal) params.append('city', cityVal);
+            if (yearVal) params.append('year', yearVal);
+            if (stdVal) params.append('standard', stdVal);
 
             try {
                 const response = await fetch(`/api/search?${params}`);
@@ -244,7 +280,7 @@ def read_root():
                 `).join('');
 
             } catch (err) {
-                body.innerHTML = `<tr><td colspan="5" class="loading">Error connecting to server.</td></tr>`;
+                body.innerHTML = `<tr><td colspan="5" class="loading">Error connecting to server. Server may be indexing data... please wait 1 minute and try again.</td></tr>`;
             }
         }
     </script>
@@ -255,17 +291,24 @@ def read_root():
 import threading
 
 def run_ingestion():
+    global ingestion_status
     if not os.path.exists(DB_PATH):
+        ingestion_status["status"] = "indexing"
         print("Database not found. Starting initial data ingestion in background...")
         try:
             import ingest_data
             ingest_data.ingest()
+            ingestion_status["status"] = "complete"
             print("Background ingestion complete.")
         except Exception as e:
+            ingestion_status["status"] = "failed"
+            ingestion_status["error"] = str(e)
             print(f"Failed to ingest data in background: {e}")
+    else:
+        ingestion_status["status"] = "complete"
 
 if __name__ == "__main__":
-    # Start ingestion in a background thread to avoid blocking server start
+    # Start ingestion in a background thread
     threading.Thread(target=run_ingestion, daemon=True).start()
             
     print("Starting dashboard server...")

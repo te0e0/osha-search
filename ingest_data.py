@@ -47,44 +47,52 @@ def ingest():
     download_and_extract(VIOLATION_URL, "Violation")
     
     conn = sqlite3.connect(DB_PATH)
-    all_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
+    conn.execute("PRAGMA journal_mode=WAL") # Improve concurrency
     
-    print(f"Found {len(all_files)} files. Starting processing...")
+    all_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
+    print(f"Found {len(all_files)} files. Starting chunked processing...")
     
     total_insp = 0
     total_viol = 0
     ca_activities = set()
 
-    # Pass 1: Inspections
+    # Pass 1: Inspections (Chunked)
     for f in all_files:
         try:
-            df = pd.read_csv(f, low_memory=False)
-            state_col, act_col = get_cols(df)
-            if state_col and 'ESTAB_NAME' in df.columns:
-                df_ca = df[df[state_col] == 'CA'].copy()
-                if not df_ca.empty:
-                    if act_col: df_ca = df_ca.rename(columns={act_col: 'ACTIVITY_NR'})
-                    df_ca.to_sql('inspections', conn, if_exists='append', index=False)
-                    total_insp += len(df_ca)
-                    if act_col: ca_activities.update(df_ca['ACTIVITY_NR'])
-        except: continue
+            # Detect columns first with a tiny read
+            sample = pd.read_csv(f, nrows=1)
+            state_col, act_col = get_cols(sample)
+            
+            if state_col and 'ESTAB_NAME' in sample.columns:
+                reader = pd.read_csv(f, chunksize=20000, low_memory=False)
+                for chunk in reader:
+                    df_ca = chunk[chunk[state_col] == 'CA'].copy()
+                    if not df_ca.empty:
+                        if act_col: df_ca = df_ca.rename(columns={act_col: 'ACTIVITY_NR'})
+                        df_ca.to_sql('inspections', conn, if_exists='append', index=False)
+                        total_insp += len(df_ca)
+                        if act_col: ca_activities.update(df_ca['ACTIVITY_NR'])
+        except Exception as e:
+            print(f"Error in inspection pass for {f}: {e}")
     
-    print(f"Indexed {total_insp} inspections. Processing violations...")
+    print(f"Indexed {total_insp} inspections. Processing violations in chunks...")
 
-    # Pass 2: Violations
+    # Pass 2: Violations (Chunked)
     for f in all_files:
         try:
-            df = pd.read_csv(f, low_memory=False)
-            _, act_col = get_cols(df)
-            if act_col and ('STANDARD' in df.columns or 'VIOL_TYPE' in df.columns):
-                df_viol = df[df[act_col].isin(ca_activities)].copy()
-                if not df_viol.empty:
-                    df_viol = df_viol.rename(columns={act_col: 'ACTIVITY_NR'})
-                    df_viol.to_sql('violations', conn, if_exists='append', index=False)
-                    total_viol += len(df_viol)
-        except: continue
-
-    print(f"DONE. Inspections: {total_insp}, Violations: {total_viol}")
+            sample = pd.read_csv(f, nrows=1)
+            _, act_col = get_cols(sample)
+            
+            if act_col and ('STANDARD' in sample.columns or 'VIOL_TYPE' in sample.columns):
+                reader = pd.read_csv(f, chunksize=20000, low_memory=False)
+                for chunk in reader:
+                    df_viol = chunk[chunk[act_col].isin(ca_activities)].copy()
+                    if not df_viol.empty:
+                        df_viol = df_viol.rename(columns={act_col: 'ACTIVITY_NR'})
+                        df_viol.to_sql('violations', conn, if_exists='append', index=False)
+                        total_viol += len(df_viol)
+        except Exception as e:
+            print(f"Error in violation pass for {f}: {e}")
     
     if total_insp > 0:
         conn.execute("CREATE INDEX idx_insp_act ON inspections(ACTIVITY_NR)")
