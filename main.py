@@ -13,9 +13,34 @@ DB_PATH = "osha_ca.db"
 # Global status for ingestion tracking
 ingestion_status = {"status": "starting", "progress": 0}
 
+def to_lois_activity_nr(friendly_nr: str) -> str:
+    """Convert 7-digit IMIS number (e.g. 1835552) to 9-digit OIS number (e.g. 348355520)"""
+    friendly_nr = friendly_nr.strip()
+    if len(friendly_nr) == 7 and friendly_nr.startswith('1'):
+        return '34' + friendly_nr[1:] + '0'
+    return friendly_nr
+
+def to_friendly_activity_nr(raw_nr: str) -> str:
+    """Convert 9-digit OIS number (e.g. 348355520) to 7-digit IMIS number (e.g. 1835552)"""
+    raw_nr = raw_nr.strip()
+    if len(raw_nr) == 9 and raw_nr.startswith('34'):
+        return '1' + raw_nr[2:-1]
+    return raw_nr
+
 @app.get("/api/status")
 def get_status():
     return ingestion_status
+
+@app.get("/api/info")
+def get_info():
+    conn = get_db_connection()
+    if not conn:
+        return {"last_update": "Unknown"}
+    try:
+        res = conn.execute("SELECT MAX(OPEN_DATE) FROM inspections").fetchone()
+        return {"last_update": res[0] if res and res[0] else "Unknown"}
+    finally:
+        conn.close()
 
 def get_db_connection():
     if not os.path.exists(DB_PATH):
@@ -41,9 +66,11 @@ def search_inspections(
     insp_type: Optional[str] = None,
     union_status: Optional[str] = None,
     region: Optional[str] = None,
+    district: Optional[str] = None,
     standard: Optional[str] = None,
     sic: Optional[str] = None,
     naics: Optional[str] = None,
+    activity_nr: Optional[str] = None,
     limit: int = 50,
     offset: int = 0
 ):
@@ -115,6 +142,49 @@ def search_inspections(
             conditions = " OR ".join(["i.SITE_ZIP LIKE ?" for _ in prefixes])
             query += f" AND ({conditions})"
             params.extend(prefixes)
+
+    if district:
+        # Cal/OSHA District offices mapped to zip code prefixes
+        district_map = {
+            "San Francisco":    ["9410%", "9411%", "9412%", "9413%", "9414%"],
+            "Oakland":          ["9460%", "9461%", "9462%", "9463%", "9460%"],
+            "Fremont":          ["9453%", "9454%", "9455%", "9456%", "9457%"],
+            "Foster City":      ["9440%", "9441%", "9402%", "9403%"],
+            "San Jose":         ["9510%", "9511%", "9512%", "9513%", "9514%"],
+            "Santa Rosa":       ["9540%", "9541%", "9542%", "9543%"],
+            "American Canyon":  ["9453%", "9457%", "9476%", "9477%", "9448%"],
+            "Concord":          ["9451%", "9452%", "9453%", "9419%"],
+            "Sacramento":       ["9582%", "9583%", "9584%", "9585%", "9586%"],
+            "Redding":          ["9600%", "9601%", "9602%"],
+            "Chico":            ["9592%", "9593%", "9594%"],
+            "Santa Cruz":       ["9500%", "9501%", "9502%", "9503%", "9504%", "9505%", "9506%"],
+            "Salinas":          ["9390%", "9391%", "9392%", "9393%"],
+            "San Luis Obispo":  ["9340%", "9341%", "9342%", "9343%"],
+            "Santa Barbara":    ["9310%", "9311%", "9312%", "9313%"],
+            "Oxnard":           ["9300%", "9301%", "9302%", "9303%"],
+            "Ventura":          ["9300%", "9302%", "9303%", "9304%"],
+            "Los Angeles":      ["9001%", "9002%", "9003%", "9004%", "9005%", "9006%", "9007%"],
+            "Van Nuys":         ["9140%", "9141%", "9142%", "9143%"],
+            "West Covina":      ["9179%", "9178%", "9177%", "9176%"],
+            "Monrovia":         ["9101%", "9102%", "9103%", "9104%"],
+            "Long Beach":       ["9080%", "9081%", "9082%", "9083%"],
+            "Torrance":         ["9050%", "9051%", "9052%", "9053%"],
+            "Pico Rivera":      ["9066%", "9067%", "9068%", "9069%"],
+            "Santa Ana":        ["9270%", "9271%", "9272%", "9273%"],
+            "Anaheim":          ["9280%", "9281%", "9282%", "9283%"],
+            "San Bernardino":   ["9240%", "9241%", "9242%", "9243%"],
+            "Riverside":        ["9250%", "9251%", "9252%", "9253%"],
+            "San Diego":        ["9210%", "9211%", "9212%", "9213%"],
+            "Fresno":           ["9372%", "9373%", "9374%", "9375%"],
+            "Modesto":          ["9535%", "9536%", "9537%", "9538%"],
+            "Bakersfield":      ["9330%", "9331%", "9332%", "9333%"],
+            "El Centro":        ["9224%", "9225%", "9226%", "9227%"],
+        }
+        prefixes = district_map.get(district)
+        if prefixes:
+            conditions = " OR ".join(["i.SITE_ZIP LIKE ?" for _ in prefixes])
+            query += f" AND ({conditions})"
+            params.extend(prefixes)
         
     if standard:
         query += " AND v.STANDARD LIKE ?"
@@ -128,6 +198,18 @@ def search_inspections(
         query += " AND i.NAICS_CODE = ?"
         params.append(naics.split(" - ")[0].strip())
 
+    if activity_nr:
+        activity_nr = activity_nr.strip()
+        # Check if it's a 7-digit Cal/OSHA (IMIS) style number
+        if len(activity_nr) == 7 and activity_nr.startswith('1'):
+            # In OIS, this maps to '34' + [last 6 digits of IMIS] + [1 digit suffix]
+            query += " AND (i.ACTIVITY_NR LIKE ? OR i.ACTIVITY_NR LIKE ?)"
+            params.append(f"%{activity_nr}%")
+            params.append('34' + activity_nr[1:] + '_')
+        else:
+            query += " AND i.ACTIVITY_NR LIKE ?"
+            params.append(f"%{activity_nr}%")
+
     query += " GROUP BY i.ACTIVITY_NR ORDER BY i.OPEN_DATE DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
 
@@ -136,6 +218,11 @@ def search_inspections(
         df = pd.read_sql_query(query, conn, params=params)
         # JSON cannot handle NaN or Infinity results from numeric columns
         df = df.replace({np.nan: None, np.inf: None, -np.inf: None})
+        
+        # Add friendly activity number to results
+        if not df.empty:
+            df['FRIENDLY_ACTIVITY_NR'] = df['ACTIVITY_NR'].apply(to_friendly_activity_nr)
+            
         return {"results": df.to_dict(orient="records")}
     except Exception as e:
         if "no such table" in str(e).lower():
@@ -168,13 +255,27 @@ def get_inspection_detail(activity_nr: str):
             WHERE i.ACTIVITY_NR = ?
         """, (activity_nr,)).fetchone()
         
+        # Fallback for 7-digit Cal/OSHA number mapping to OIS
+        if not insp and len(activity_nr) == 7 and activity_nr.startswith('1'):
+            ois_prefix = '34' + activity_nr[1:]
+            insp = conn.execute("""
+                SELECT i.*, sc.title as SIC_TITLE, nc.title as NAICS_TITLE 
+                FROM inspections i 
+                LEFT JOIN sic_codes sc ON CAST(i.SIC_CODE AS INTEGER) = CAST(sc.code AS INTEGER)
+                LEFT JOIN naics_codes nc ON CAST(i.NAICS_CODE AS INTEGER) = CAST(nc.code AS INTEGER)
+                WHERE i.ACTIVITY_NR LIKE ?
+            """, (ois_prefix + '_',)).fetchone()
+        
         if not insp:
             return {"error": "Inspection not found."}
             
-        viols_raw = conn.execute("SELECT * FROM violations WHERE ACTIVITY_NR = ?", (activity_nr,)).fetchall()
+        insp_dict = sanitize_row(insp)
+        insp_dict['FRIENDLY_ACTIVITY_NR'] = to_friendly_activity_nr(insp_dict['ACTIVITY_NR'])
+        
+        viols_raw = conn.execute("SELECT * FROM violations WHERE ACTIVITY_NR = ?", (insp['ACTIVITY_NR'],)).fetchall()
         
         return {
-            "inspection": sanitize_row(insp),
+            "inspection": insp_dict,
             "violations": [sanitize_row(v) for v in viols_raw]
         }
     finally:
@@ -352,12 +453,19 @@ def read_root():
 </head>
 <body>
     <div class="container">
-        <div id="status-bar" style="text-align: right; font-size: 0.7rem; color: var(--muted); margin-bottom: 0.5rem; display: none;">
-            Indexing in progress... (takes ~5 mins)
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+            <div id="data-info" style="font-size: 0.7rem; color: var(--muted);">Checking data recency...</div>
+            <div id="status-bar" style="font-size: 0.7rem; color: var(--muted); display: none;">
+                Indexing in progress... (takes ~5 mins)
+            </div>
         </div>
         <h1>Cal/OSHA Search Dashboard</h1>
         
         <div class="search-grid">
+            <div class="input-group">
+                <label>Inspection Number</label>
+                <input type="text" id="activity_nr" placeholder="e.g. 1234567">
+            </div>
             <div class="input-group">
                 <label>Employer</label>
                 <input type="text" id="employer" list="employer-list" placeholder="e.g. Tesla">
@@ -448,6 +556,55 @@ def read_root():
                 </select>
             </div>
             <div class="input-group">
+                <label>District Office</label>
+                <select id="district">
+                    <option value="">Any</option>
+                    <optgroup label="Region 1 – Bay Area">
+                        <option value="San Francisco">San Francisco</option>
+                        <option value="Oakland">Oakland</option>
+                        <option value="Fremont">Fremont</option>
+                        <option value="Foster City">Foster City</option>
+                        <option value="San Jose">San Jose</option>
+                        <option value="Concord">Concord</option>
+                        <option value="Santa Rosa">Santa Rosa</option>
+                        <option value="American Canyon">American Canyon</option>
+                    </optgroup>
+                    <optgroup label="Region 2 – Northern CA">
+                        <option value="Sacramento">Sacramento</option>
+                        <option value="Redding">Redding</option>
+                        <option value="Chico">Chico</option>
+                    </optgroup>
+                    <optgroup label="Region 3 – San Diego / Orange / IE">
+                        <option value="Santa Ana">Santa Ana</option>
+                        <option value="Anaheim">Anaheim</option>
+                        <option value="San Bernardino">San Bernardino</option>
+                        <option value="Riverside">Riverside</option>
+                        <option value="San Diego">San Diego</option>
+                        <option value="El Centro">El Centro</option>
+                    </optgroup>
+                    <optgroup label="Region 4 – Los Angeles / Ventura">
+                        <option value="Los Angeles">Los Angeles</option>
+                        <option value="Van Nuys">Van Nuys</option>
+                        <option value="West Covina">West Covina</option>
+                        <option value="Monrovia">Monrovia</option>
+                        <option value="Long Beach">Long Beach</option>
+                        <option value="Torrance">Torrance</option>
+                        <option value="Pico Rivera">Pico Rivera</option>
+                        <option value="Ventura">Ventura</option>
+                        <option value="Oxnard">Oxnard</option>
+                        <option value="Santa Barbara">Santa Barbara</option>
+                        <option value="San Luis Obispo">San Luis Obispo</option>
+                    </optgroup>
+                    <optgroup label="Region 8 – Central Valley">
+                        <option value="Fresno">Fresno</option>
+                        <option value="Modesto">Modesto</option>
+                        <option value="Bakersfield">Bakersfield</option>
+                        <option value="Salinas">Salinas</option>
+                        <option value="Santa Cruz">Santa Cruz</option>
+                    </optgroup>
+                </select>
+            </div>
+            <div class="input-group">
                 <label>Classification</label>
                 <select id="classification">
                     <option value="">Any</option>
@@ -466,13 +623,14 @@ def read_root():
                 <thead>
                     <tr>
                         <th>Date</th>
+                        <th>Inspection #</th>
                         <th>Employer</th>
                         <th>City</th>
                         <th>Standards Cited</th>
                     </tr>
                 </thead>
                 <tbody id="resultsBody">
-                    <tr><td colspan="4" class="loading">Enter search criteria and click Search</td></tr>
+                    <tr><td colspan="5" class="loading">Enter search criteria and click Search</td></tr>
                 </tbody>
             </table>
         </div>
@@ -511,10 +669,21 @@ def read_root():
 
         async function checkStatus() {
             const bar = document.getElementById('status-bar');
+            // Check Status and Data Info
             try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
-                if (data.status === 'indexing') {
+                const [statusRes, infoRes] = await Promise.all([
+                    fetch('/api/status'),
+                    fetch('/api/info')
+                ]);
+                
+                const status = await statusRes.json();
+                const info = await infoRes.json();
+
+                if (info.last_update && info.last_update !== "Unknown") {
+                    document.getElementById('data-info').innerText = `Data Current As Of: ${info.last_update}`;
+                }
+
+                if (status.status === 'indexing') {
                     bar.style.display = 'block';
                 } else {
                     bar.style.display = 'none';
@@ -539,11 +708,14 @@ def read_root():
             const unionVal = document.getElementById('union_status').value;
             const classVal = document.getElementById('classification').value;
             const regionVal = document.getElementById('region').value;
+            const districtVal = document.getElementById('district').value;
             const sicVal = document.getElementById('sic').value;
             const naicsVal = document.getElementById('naics').value;
             const invStatusVal = document.getElementById('inv_status').value;
             const hasViolVal = document.getElementById('has_viol').value;
+            const activityNrVal = document.getElementById('activity_nr').value;
 
+            if (activityNrVal) params.append('activity_nr', activityNrVal);
             if (empVal) params.append('employer', empVal);
             if (cityVal) params.append('city', cityVal);
             if (addrVal) params.append('address', addrVal);
@@ -554,6 +726,7 @@ def read_root():
             if (unionVal) params.append('union_status', unionVal);
             if (classVal) params.append('classification', classVal);
             if (regionVal) params.append('region', regionVal);
+            if (districtVal) params.append('district', districtVal);
             if (sicVal) params.append('sic', sicVal);
             if (naicsVal) params.append('naics', naicsVal);
             if (invStatusVal) params.append('inv_status', invStatusVal);
@@ -576,6 +749,7 @@ def read_root():
                 body.innerHTML = data.results.map(row => `
                     <tr class="clickable" onclick="showDetails('${row.ACTIVITY_NR}')">
                         <td>${new Date(row.OPEN_DATE).toLocaleDateString()}</td>
+                        <td style="font-weight:600; color:var(--primary)">${row.FRIENDLY_ACTIVITY_NR || row.ACTIVITY_NR}</td>
                         <td style="font-weight:600">${row.ESTAB_NAME}</td>
                         <td>${row.SITE_CITY}</td>
                         <td>
@@ -611,7 +785,11 @@ def read_root():
                     
                     <div class="detail-grid">
                         <div class="detail-section">
-                            <h3>Inspection Details</h3>
+                            <h3>Inspection Number</h3>
+                            <div class="detail-value" style="font-size: 1.5rem; color: var(--primary); margin-bottom: 0.2rem;">${i.FRIENDLY_ACTIVITY_NR || i.ACTIVITY_NR}</div>
+                            <div style="font-size: 0.6rem; color: var(--muted); margin-bottom: 1.5rem;">OIS: ${i.ACTIVITY_NR}</div>
+                            
+                            <h3>Basic Info</h3>
                             <div class="detail-item"><div class="detail-label">Type</div><div class="detail-value">
                                 ${i.INSP_TYPE === 'A' ? 'Programmed Planned' : 
                                   i.INSP_TYPE === 'B' ? 'Programmed Related' : 
