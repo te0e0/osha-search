@@ -16,28 +16,26 @@ def download_and_extract(url, name):
     if not os.path.exists(DATA_DIR):
         os.makedirs(DATA_DIR)
     
-    # Check if we already have CSVs for this dataset
-    existing_csvs = glob.glob(os.path.join(DATA_DIR, "*.csv"))
-    if not existing_csvs:
-        print(f"Streaming from {url}...")
-        try:
-            temp_zip = os.path.join(DATA_DIR, f"temp_{name}.zip")
-            with requests.get(url, stream=True) as r:
-                r.raise_for_status()
-                with open(temp_zip, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
+    print(f"Streaming from {url}...")
+    try:
+        temp_zip = os.path.join(DATA_DIR, f"temp_{name}.zip")
+        with requests.get(url, stream=True) as r:
+            r.raise_for_status()
+            with open(temp_zip, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=1024*1024): # 1MB chunks
+                    if chunk:
                         f.write(chunk)
-            
-            print(f"Download complete. Extracting {name}...")
-            with zipfile.ZipFile(temp_zip, 'r') as z:
-                z.extractall(DATA_DIR)
-            
-            os.remove(temp_zip) # Delete ZIP to save space
-            print(f"Extraction for {name} complete.")
-        except Exception as e:
-            print(f"Error processing {name}: {e}")
-    else:
-        print(f"Using existing {name} data in {DATA_DIR}.")
+                        f.flush()
+                        os.fsync(f.fileno()) # Force write to disk immediately
+        
+        print(f"Download complete. Extracting {name}...")
+        with zipfile.ZipFile(temp_zip, 'r') as z:
+            z.extractall(DATA_DIR)
+        
+        os.remove(temp_zip) # Delete ZIP to save space
+        print(f"Extraction for {name} complete.")
+    except Exception as e:
+        print(f"Error processing {name}: {e}")
 
 def get_cols(df):
     cols = {c.upper(): c for c in df.columns}
