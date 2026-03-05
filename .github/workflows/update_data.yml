@@ -1,0 +1,50 @@
+name: Weekly OSHA Database Build
+
+on:
+  schedule:
+    # Run at midnight (UTC) every Sunday
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    # Allow manual triggering from the GitHub UI
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    
+    # Needs permission to create a release in your repository
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: Download and Ingest Final Database
+        run: |
+          python ingest_data.py
+          python load_industry_codes.py
+          
+      - name: Zip the Database
+        run: |
+          zip osha_ca.zip osha_ca.db
+          
+      - name: Create Release and Upload DB
+        uses: softprops/action-gh-release@v2
+        with:
+          # Creates a rolling "latest" release tag every time it runs
+          tag_name: latest-db
+          name: "Weekly OSHA Database Update"
+          body: "Automated weekly build of the Cal/OSHA Inspection Database."
+          files: osha_ca.zip
+          # Automatically overwrites the previous week's release
+          make_latest: true
