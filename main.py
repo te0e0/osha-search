@@ -132,7 +132,10 @@ def search_inspections(
     params.extend([limit, offset])
 
     try:
+        import numpy as np
         df = pd.read_sql_query(query, conn, params=params)
+        # JSON cannot handle NaN or Infinity results from numeric columns
+        df = df.replace({np.nan: None, np.inf: None, -np.inf: None})
         return {"results": df.to_dict(orient="records")}
     except Exception as e:
         if "no such table" in str(e).lower():
@@ -140,6 +143,15 @@ def search_inspections(
         return {"error": f"Search failed: {str(e)}", "results": []}
     finally:
         conn.close()
+
+def sanitize_row(row):
+    """Convert SQLite row to dict and replace NaN/Inf with None for JSON compliance"""
+    import math
+    d = dict(row)
+    for k, v in d.items():
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            d[k] = None
+    return d
 
 @app.get("/api/inspection/{activity_nr}")
 def get_inspection_detail(activity_nr: str):
@@ -155,14 +167,15 @@ def get_inspection_detail(activity_nr: str):
             LEFT JOIN naics_codes nc ON CAST(i.NAICS_CODE AS INTEGER) = CAST(nc.code AS INTEGER)
             WHERE i.ACTIVITY_NR = ?
         """, (activity_nr,)).fetchone()
+        
         if not insp:
             return {"error": "Inspection not found."}
             
-        viols = conn.execute("SELECT * FROM violations WHERE ACTIVITY_NR = ?", (activity_nr,)).fetchall()
+        viols_raw = conn.execute("SELECT * FROM violations WHERE ACTIVITY_NR = ?", (activity_nr,)).fetchall()
         
         return {
-            "inspection": dict(insp),
-            "violations": [dict(v) for v in viols]
+            "inspection": sanitize_row(insp),
+            "violations": [sanitize_row(v) for v in viols_raw]
         }
     finally:
         conn.close()
