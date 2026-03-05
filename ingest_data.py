@@ -97,6 +97,13 @@ def ingest():
     ca_activities = set()
 
     # Pass 1: Inspections (Chunked)
+    REQUIRED_INSP_COLS = [
+        'ACTIVITY_NR', 'ESTAB_NAME', 'SITE_ADDRESS', 'SITE_CITY', 
+        'SITE_STATE', 'SITE_ZIP', 'OPEN_DATE', 'INSP_TYPE', 
+        'INSP_SCOPE', 'UNION_STATUS', 'SIC_CODE', 'NAICS_CODE', 
+        'OWNER_TYPE', 'CLOSE_CASE_DATE', 'CASE_MOD_DATE'
+    ]
+
     for f in all_files:
         try:
             # Detect columns first with a tiny read
@@ -106,18 +113,32 @@ def ingest():
             if state_col and 'ESTAB_NAME' in sample.columns:
                 reader = pd.read_csv(f, chunksize=20000, low_memory=False)
                 for chunk in reader:
+                    # Rename activity number if needed
+                    if act_col and act_col != 'ACTIVITY_NR':
+                        chunk = chunk.rename(columns={act_col: 'ACTIVITY_NR'})
+                    
                     df_ca = chunk[chunk[state_col] == 'CA'].copy()
                     if not df_ca.empty:
-                        if act_col: df_ca = df_ca.rename(columns={act_col: 'ACTIVITY_NR'})
+                        # Only keep columns that exist in both the table and the CSV
+                        cols_to_keep = [c for c in REQUIRED_INSP_COLS if c in df_ca.columns]
+                        df_ca = df_ca[cols_to_keep]
+                        
                         df_ca.to_sql('inspections', conn, if_exists='append', index=False)
                         total_insp += len(df_ca)
-                        if act_col: ca_activities.update(df_ca['ACTIVITY_NR'])
+                        ca_activities.update(df_ca['ACTIVITY_NR'])
         except Exception as e:
+            import traceback
             print(f"Error in inspection pass for {f}: {e}")
+            traceback.print_exc()
     
     print(f"Indexed {total_insp} inspections. Processing violations in chunks...")
 
     # Pass 2: Violations (Chunked)
+    REQUIRED_VIOL_COLS = [
+        'ACTIVITY_NR', 'CITATION_ID', 'STANDARD', 'VIOL_TYPE', 
+        'INITIAL_PENALTY', 'CURRENT_PENALTY', 'ABATE_DATE'
+    ]
+
     for f in all_files:
         try:
             sample = pd.read_csv(f, nrows=1)
@@ -126,13 +147,21 @@ def ingest():
             if act_col and ('STANDARD' in sample.columns or 'VIOL_TYPE' in sample.columns):
                 reader = pd.read_csv(f, chunksize=20000, low_memory=False)
                 for chunk in reader:
-                    df_viol = chunk[chunk[act_col].isin(ca_activities)].copy()
+                    # Rename activity number if needed
+                    if act_col and act_col != 'ACTIVITY_NR':
+                        chunk = chunk.rename(columns={act_col: 'ACTIVITY_NR'})
+                        
+                    df_viol = chunk[chunk['ACTIVITY_NR'].isin(ca_activities)].copy()
                     if not df_viol.empty:
-                        df_viol = df_viol.rename(columns={act_col: 'ACTIVITY_NR'})
+                        cols_to_keep = [c for c in REQUIRED_VIOL_COLS if c in df_viol.columns]
+                        df_viol = df_viol[cols_to_keep]
+                        
                         df_viol.to_sql('violations', conn, if_exists='append', index=False)
                         total_viol += len(df_viol)
         except Exception as e:
+            import traceback
             print(f"Error in violation pass for {f}: {e}")
+            traceback.print_exc()
     
     if total_insp > 0:
         conn.execute("CREATE INDEX idx_insp_act ON inspections(ACTIVITY_NR)")
