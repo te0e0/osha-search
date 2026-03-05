@@ -431,6 +431,21 @@ def read_root():
         
         .loading { text-align: center; padding: 3rem; color: var(--muted); font-style: italic; }
 
+        .sortable {
+            cursor: pointer;
+            user-select: none;
+        }
+        
+        .sortable:hover {
+            background-color: rgba(255,255,255,0.05); /* Adjusted for dark theme */
+        }
+
+        .sort-icon {
+            font-size: 0.8rem;
+            margin-left: 5px;
+            color: var(--primary);
+        }
+
         /* Modal Styles */
         #modal-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
@@ -641,11 +656,11 @@ def read_root():
             <table id="resultsTable">
                 <thead>
                     <tr>
-                        <th>Date</th>
-                        <th>Inspection #</th>
-                        <th>Employer</th>
-                        <th>City</th>
-                        <th>Standards Cited</th>
+                        <th class="sortable" onclick="sortTable('open_date')">Opened <span class="sort-icon" id="sort-open_date"></span></th>
+                        <th class="sortable" onclick="sortTable('activity_nr')">Inspection # <span class="sort-icon" id="sort-activity_nr"></span></th>
+                        <th class="sortable" onclick="sortTable('estab_name')">Employer <span class="sort-icon" id="sort-estab_name"></span></th>
+                        <th class="sortable" onclick="sortTable('site_city')">City <span class="sort-icon" id="sort-site_city"></span></th>
+                        <th>Violations</th>
                     </tr>
                 </thead>
                 <tbody id="resultsBody">
@@ -712,6 +727,9 @@ def read_root():
         setInterval(checkStatus, 10000);
         checkStatus();
 
+        let currentResults = [];
+        let currentSort = { column: null, asc: true };
+
         async function performSearch() {
             const body = document.getElementById('resultsBody');
             body.innerHTML = '<tr><td colspan="5" class="loading">Loading records...</td></tr>';
@@ -757,29 +775,89 @@ def read_root():
 
                 if (data.error) {
                     body.innerHTML = `<tr><td colspan="5" class="loading" style="color:#f87171">${data.error}</td></tr>`;
+                    currentResults = [];
                     return;
                 }
 
                 if (data.results.length === 0) {
                     body.innerHTML = '<tr><td colspan="5" class="loading">No records found matching criteria.</td></tr>';
+                    currentResults = [];
                     return;
                 }
 
-                body.innerHTML = data.results.map(row => `
-                    <tr class="clickable" onclick="showDetails('${row.ACTIVITY_NR}')">
-                        <td>${new Date(row.OPEN_DATE).toLocaleDateString()}</td>
-                        <td style="font-weight:600; color:var(--primary)">${row.FRIENDLY_ACTIVITY_NR || row.ACTIVITY_NR}</td>
-                        <td style="font-weight:600">${row.ESTAB_NAME}</td>
-                        <td>${row.SITE_CITY}</td>
-                        <td>
-                            ${(row.standards || '').split(',').map(s => `<span class="badge badge-other">${s}</span>`).join(' ')}
-                        </td>
-                    </tr>
-                `).join('');
+                currentResults = data.results;
+                
+                // Reset sorting when new search happens
+                currentSort = { column: null, asc: true };
+                document.querySelectorAll('.sort-icon').forEach(el => el.innerHTML = '');
+                
+                renderTable();
 
             } catch (err) {
                 body.innerHTML = `<tr><td colspan="5" class="loading">Error connecting to server. Server may be indexing data... please wait 1 minute and try again.</td></tr>`;
+                currentResults = [];
             }
+        }
+
+        function sortTable(column) {
+            if (currentResults.length === 0) return;
+
+            // Toggle sort direction if clicking the same column
+            if (currentSort.column === column) {
+                currentSort.asc = !currentSort.asc;
+            } else {
+                currentSort.column = column;
+                currentSort.asc = true;
+            }
+
+            // Update UI Icons
+            document.querySelectorAll('.sort-icon').forEach(el => el.innerHTML = '');
+            document.getElementById(`sort-${column}`).innerHTML = currentSort.asc ? '▲' : '▼';
+
+            currentResults.sort((a, b) => {
+                let valA, valB;
+
+                if (column === 'open_date') {
+                    valA = new Date(a.OPEN_DATE).getTime();
+                    valB = new Date(b.OPEN_DATE).getTime();
+                } else if (column === 'activity_nr') {
+                    valA = parseInt(a.FRIENDLY_ACTIVITY_NR || a.ACTIVITY_NR);
+                    valB = parseInt(b.FRIENDLY_ACTIVITY_NR || b.ACTIVITY_NR);
+                } else if (column === 'estab_name') {
+                    valA = a.ESTAB_NAME || '';
+                    valB = b.ESTAB_NAME || '';
+                } else if (column === 'site_city') {
+                    valA = a.SITE_CITY || '';
+                    valB = b.SITE_CITY || '';
+                }
+
+                // Handle string comparisons
+                if (typeof valA === 'string' && typeof valB === 'string') {
+                    return currentSort.asc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+                }
+                
+                // Handle numeric comparisons
+                if (valA < valB) return currentSort.asc ? -1 : 1;
+                if (valA > valB) return currentSort.asc ? 1 : -1;
+                return 0;
+            });
+
+            renderTable();
+        }
+
+        function renderTable() {
+            const body = document.getElementById('resultsBody');
+            body.innerHTML = currentResults.map(row => `
+                <tr class="clickable" onclick="showDetails('${row.ACTIVITY_NR}')">
+                    <td>${new Date(row.OPEN_DATE).toLocaleDateString()}</td>
+                    <td style="font-weight:600; color:var(--primary)">${row.FRIENDLY_ACTIVITY_NR || row.ACTIVITY_NR}</td>
+                    <td style="font-weight:600">${row.ESTAB_NAME}</td>
+                    <td>${row.SITE_CITY}</td>
+                    <td>
+                        ${(row.standards || '').split(',').map(s => s.trim() ? `<span class="badge badge-other">${s}</span>` : '').join(' ')}
+                    </td>
+                </tr>
+            `).join('');
         }
 
         async function showDetails(id) {
