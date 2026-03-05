@@ -71,7 +71,8 @@ def ingest():
             NAICS_CODE TEXT,
             OWNER_TYPE TEXT,
             CLOSE_CASE_DATE TEXT,
-            CASE_MOD_DATE TEXT
+            CASE_MOD_DATE TEXT,
+            REPORTING_ID TEXT
         )
     """)
     conn.execute("""
@@ -99,7 +100,7 @@ def ingest():
         'ACTIVITY_NR', 'ESTAB_NAME', 'SITE_ADDRESS', 'SITE_CITY', 
         'SITE_STATE', 'SITE_ZIP', 'OPEN_DATE', 'INSP_TYPE', 
         'INSP_SCOPE', 'UNION_STATUS', 'SIC_CODE', 'NAICS_CODE', 
-        'OWNER_TYPE', 'CLOSE_CASE_DATE', 'CASE_MOD_DATE'
+        'OWNER_TYPE', 'CLOSE_CASE_DATE', 'CASE_MOD_DATE', 'REPORTING_ID', 'REPORT_ID'
     ]
 
     for f in all_files:
@@ -117,8 +118,16 @@ def ingest():
                     
                     df_ca = chunk[chunk[state_col] == 'CA'].copy()
                     if not df_ca.empty:
+                        # Normalize reporting ID name if federal data uses REPORT_ID
+                        if 'REPORT_ID' in df_ca.columns and 'REPORTING_ID' not in df_ca.columns:
+                            df_ca.rename(columns={'REPORT_ID': 'REPORTING_ID'}, inplace=True)
+                            
                         # Only keep columns that exist in both the table and the CSV
                         cols_to_keep = [c for c in REQUIRED_INSP_COLS if c in df_ca.columns]
+                        # Remove REPORT_ID from cols_to_keep if we just renamed it
+                        if 'REPORT_ID' in cols_to_keep:
+                            cols_to_keep.remove('REPORT_ID')
+                            
                         df_ca = df_ca[cols_to_keep]
                         
                         df_ca.to_sql('inspections', conn, if_exists='append', index=False)

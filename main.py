@@ -137,54 +137,70 @@ def search_inspections(
             "4": ["90%", "91%"], # Los Angeles/Ventura
             "8": ["93%"]  # Central Valley
         }
-        prefixes = region_map.get(region)
-        if prefixes:
-            conditions = " OR ".join(["i.SITE_ZIP LIKE ?" for _ in prefixes])
+        if region == "7": # PSM
+            rids = ["950663", "950664", "950671", "950672", "950673", "950674"]
+            conditions = " OR ".join(["i.REPORTING_ID = ?" for _ in rids])
             query += f" AND ({conditions})"
-            params.extend(prefixes)
+            params.extend(rids)
+        elif region == "5": # Mining
+            rids = ["950651", "950652", "950653", "950661"]
+            conditions = " OR ".join(["i.REPORTING_ID = ?" for _ in rids])
+            query += f" AND ({conditions})"
+            params.extend(rids)
+        elif region == "6": # High Hazard/LETF
+            rids = ["950662", "950665", "950667", "950681", "950682", "950683", "950684", "950691", "950692", "950693", "950694"]
+            conditions = " OR ".join(["i.REPORTING_ID = ?" for _ in rids])
+            query += f" AND ({conditions})"
+            params.extend(rids)
+        else:
+            prefixes = region_map.get(region)
+            if prefixes:
+                conditions = " OR ".join(["i.SITE_ZIP LIKE ?" for _ in prefixes])
+                query += f" AND ({conditions})"
+                params.extend(prefixes)
 
     if district:
-        # Cal/OSHA District offices mapped to zip code prefixes
+        # Cal/OSHA District/Unit offices mapped to exact REPORTING_IDs
         district_map = {
-            "San Francisco":    ["9410%", "9411%", "9412%", "9413%", "9414%"],
-            "Oakland":          ["9460%", "9461%", "9462%", "9463%", "9460%"],
-            "Fremont":          ["9453%", "9454%", "9455%", "9456%", "9457%"],
-            "Foster City":      ["9440%", "9441%", "9402%", "9403%"],
-            "San Jose":         ["9510%", "9511%", "9512%", "9513%", "9514%"],
-            "Santa Rosa":       ["9540%", "9541%", "9542%", "9543%"],
-            "American Canyon":  ["9453%", "9457%", "9476%", "9477%", "9448%"],
-            "Concord":          ["9451%", "9452%", "9453%", "9419%"],
-            "Sacramento":       ["9582%", "9583%", "9584%", "9585%", "9586%"],
-            "Redding":          ["9600%", "9601%", "9602%"],
-            "Chico":            ["9592%", "9593%", "9594%"],
-            "Santa Cruz":       ["9500%", "9501%", "9502%", "9503%", "9504%", "9505%", "9506%"],
-            "Salinas":          ["9390%", "9391%", "9392%", "9393%"],
-            "San Luis Obispo":  ["9340%", "9341%", "9342%", "9343%"],
-            "Santa Barbara":    ["9310%", "9311%", "9312%", "9313%"],
-            "Oxnard":           ["9300%", "9301%", "9302%", "9303%"],
-            "Ventura":          ["9300%", "9302%", "9303%", "9304%"],
-            "Los Angeles":      ["9001%", "9002%", "9003%", "9004%", "9005%", "9006%", "9007%"],
-            "Van Nuys":         ["9140%", "9141%", "9142%", "9143%"],
-            "West Covina":      ["9179%", "9178%", "9177%", "9176%"],
-            "Monrovia":         ["9101%", "9102%", "9103%", "9104%"],
-            "Long Beach":       ["9080%", "9081%", "9082%", "9083%"],
-            "Torrance":         ["9050%", "9051%", "9052%", "9053%"],
-            "Pico Rivera":      ["9066%", "9067%", "9068%", "9069%"],
-            "Santa Ana":        ["9270%", "9271%", "9272%", "9273%"],
-            "Anaheim":          ["9280%", "9281%", "9282%", "9283%"],
-            "San Bernardino":   ["9240%", "9241%", "9242%", "9243%"],
-            "Riverside":        ["9250%", "9251%", "9252%", "9253%"],
-            "San Diego":        ["9210%", "9211%", "9212%", "9213%"],
-            "Fresno":           ["9372%", "9373%", "9374%", "9375%"],
-            "Modesto":          ["9535%", "9536%", "9537%", "9538%"],
-            "Bakersfield":      ["9330%", "9331%", "9332%", "9333%"],
-            "El Centro":        ["9224%", "9225%", "9226%", "9227%"],
+            # Region 1 – Bay Area
+            "San Francisco":    ["950611"],
+            "San Jose":         ["950612"],
+            "Foster City":      ["950613"],
+            "Oakland/Fremont":  ["950614"],
+            "Santa Rosa/American Canyon": ["950615"],
+            "Concord":          ["950622"],
+            
+            # Region 2 – Northern CA
+            "Sacramento":       ["950621"],
+            "Redding/Chico":    ["950623"],
+
+            # Region 3 – San Diego/Orange/IE
+            "Santa Ana/Anaheim": ["950631"],
+            "San Diego/El Centro":["950632"],
+            "San Bernardino/Riverside": ["950633"],
+
+            # Region 4 – Los Angeles/Ventura
+            "Long Beach/Torrance": ["950635"],
+            "Los Angeles":      ["950641"],
+            "Van Nuys":         ["950643"],
+            "Monrovia/West Covina": ["950644"],
+            "Ventura/Oxnard/SB/SLO": ["950645"], # Includes Ag/High Hazard for Central Coast
+
+            # Region 8 – Central Valley
+            "Modesto":          ["950624"],
+            "Fresno":           ["950625"],
+            "Bakersfield":      ["950626", "950647"],
+            
+            # Specialized Units (Statewide)
+            "Mining & Tunneling": ["950651", "950652", "950653", "950661"],
+            "Process Safety Mgt (PSM)": ["950663", "950664", "950671", "950672", "950673", "950674"],
+            "High Hazard/LETF/Ag": ["950662", "950665", "950667", "950681", "950682", "950683", "950684", "950691", "950692", "950693", "950694"]
         }
-        prefixes = district_map.get(district)
-        if prefixes:
-            conditions = " OR ".join(["i.SITE_ZIP LIKE ?" for _ in prefixes])
+        rids = district_map.get(district)
+        if rids:
+            conditions = " OR ".join(["i.REPORTING_ID = ?" for _ in rids])
             query += f" AND ({conditions})"
-            params.extend(prefixes)
+            params.extend(rids)
         
     if standard:
         query += " AND v.STANDARD LIKE ?"
@@ -552,6 +568,9 @@ def read_root():
                     <option value="2">Region 2 (Northern CA)</option>
                     <option value="3">Region 3 (San Diego / Orange / IE)</option>
                     <option value="4">Region 4 (Los Angeles / Ventura)</option>
+                    <option value="5">Region 5 (Mining & Tunneling)</option>
+                    <option value="6">Region 6 (High Hazard / LETF)</option>
+                    <option value="7">Region 7 (Process Safety Mgt / PSM)</option>
                     <option value="8">Region 8 (Central Valley)</option>
                 </select>
             </div>
@@ -585,15 +604,10 @@ def read_root():
                     <optgroup label="Region 4 – Los Angeles / Ventura">
                         <option value="Los Angeles">Los Angeles</option>
                         <option value="Van Nuys">Van Nuys</option>
-                        <option value="West Covina">West Covina</option>
-                        <option value="Monrovia">Monrovia</option>
-                        <option value="Long Beach">Long Beach</option>
-                        <option value="Torrance">Torrance</option>
+                        <option value="Monrovia/West Covina">Monrovia / West Covina</option>
+                        <option value="Long Beach/Torrance">Long Beach / Torrance</option>
                         <option value="Pico Rivera">Pico Rivera</option>
-                        <option value="Ventura">Ventura</option>
-                        <option value="Oxnard">Oxnard</option>
-                        <option value="Santa Barbara">Santa Barbara</option>
-                        <option value="San Luis Obispo">San Luis Obispo</option>
+                        <option value="Ventura/Oxnard/SB/SLO">Ventura / Oxnard / Santa Barbara / SLO</option>
                     </optgroup>
                     <optgroup label="Region 8 – Central Valley">
                         <option value="Fresno">Fresno</option>
@@ -601,6 +615,11 @@ def read_root():
                         <option value="Bakersfield">Bakersfield</option>
                         <option value="Salinas">Salinas</option>
                         <option value="Santa Cruz">Santa Cruz</option>
+                    </optgroup>
+                    <optgroup label="Specialized Units (Statewide)">
+                        <option value="High Hazard/LETF/Ag">High Hazard Unit / LETF / Ag</option>
+                        <option value="Process Safety Mgt (PSM)">Process Safety Management (PSM)</option>
+                        <option value="Mining & Tunneling">Mining & Tunneling</option>
                     </optgroup>
                 </select>
             </div>
