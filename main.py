@@ -7,23 +7,6 @@ import uvicorn
 import os
 
 app = FastAPI(title="Cal/OSHA Search Dashboard")
-import os
-from download_db import download_and_extract_db
-
-@app.on_event("startup")
-async def startup_event():
-    try:
-        # Remove old DB if it exists
-        if os.path.exists("osha_ca.db"):
-            os.remove("osha_ca.db")
-    except Exception as e:
-        print("Could not delete old DB:", e)
-
-    try:
-        # Download + extract new DB
-        download_and_extract_db()
-    except Exception as e:
-        print("DB download failed:", e)
 DB_PATH = "osha_ca.db"
 
 # Global status for ingestion tracking
@@ -1000,6 +983,7 @@ if __name__ == "__main__":
             
     print("Starting dashboard server...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
 
 
