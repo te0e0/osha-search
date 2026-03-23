@@ -30,6 +30,16 @@ def to_friendly_activity_nr(raw_nr: str) -> str:
 def get_status():
     return ingestion_status
 
+@app.post("/api/refresh")
+def refresh_data():
+    global ingestion_status
+    if ingestion_status["status"] == "indexing":
+        return {"error": "Indexing already in progress."}
+    
+    # Start ingestion in a background thread with force=True
+    threading.Thread(target=run_ingestion, args=(True,), daemon=True).start()
+    return {"message": "Refresh started."}
+
 @app.get("/api/info")
 def get_info():
     conn = get_db_connection()
@@ -70,6 +80,8 @@ def search_inspections(
     sic: Optional[str] = None,
     naics: Optional[str] = None,
     activity_nr: Optional[str] = None,
+    resolution: Optional[str] = None,
+    hearing: Optional[str] = None,
     limit: int = 50,
     offset: int = 0
 ):
@@ -78,7 +90,10 @@ def search_inspections(
         return {"error": "Index still building... give it 5 minutes.", "results": []}
 
     query = """
-    SELECT i.*, GROUP_CONCAT(v.STANDARD) as standards, GROUP_CONCAT(v.VIOL_TYPE) as severities
+    SELECT i.*, 
+           GROUP_CONCAT(DISTINCT v.STANDARD) as standards, 
+           GROUP_CONCAT(DISTINCT v.VIOL_TYPE) as severities,
+           MAX(v.LATEST_EVENT) as LATEST_EVENT
     FROM inspections i
     LEFT JOIN violations v ON i.ACTIVITY_NR = v.ACTIVITY_NR
     WHERE 1=1
@@ -224,6 +239,57 @@ def search_inspections(
         else:
             query += " AND i.ACTIVITY_NR LIKE ?"
             params.append(f"%{activity_nr}%")
+
+    if resolution:
+        resolution_map = {
+            "informal":  "I",
+            "formal":    "F",
+            "alj_affirm": "A",
+            "review_commission": "R",
+        }
+        if resolution == "final":
+            # Has a final order date on any violation
+            query += " AND EXISTS (SELECT 1 FROM violations v3 WHERE v3.ACTIVITY_NR = i.ACTIVITY_NR AND v3.FINAL_ORDER_DATE IS NOT NULL AND v3.FINAL_ORDER_DATE != '')"
+        elif resolution == "contested":
+            # Use CONTEST_DATE (set when employer formally contests) OR LATEST_EVENT code C
+            query += """ AND EXISTS (
+                SELECT 1 FROM violations v3 WHERE v3.ACTIVITY_NR = i.ACTIVITY_NR AND (
+                    (v3.CONTEST_DATE IS NOT NULL AND v3.CONTEST_DATE != '')
+                    OR v3.LATEST_EVENT = 'C'
+                )
+            )"""
+        elif resolution == "any_hearing":
+            # Any case that went to a formal hearing stage
+            # Use CONTEST_DATE as primary signal for CA + LATEST_EVENT codes for federal
+            hearing_codes = ('C', 'A', 'F', 'R', 'J')
+            placeholders = ','.join('?' for _ in hearing_codes)
+            query += f""" AND EXISTS (
+                SELECT 1 FROM violations v3 WHERE v3.ACTIVITY_NR = i.ACTIVITY_NR AND (
+                    (v3.CONTEST_DATE IS NOT NULL AND v3.CONTEST_DATE != '')
+                    OR v3.LATEST_EVENT IN ({placeholders})
+                )
+            )"""
+            params.extend(hearing_codes)
+        elif resolution in resolution_map:
+            code = resolution_map[resolution]
+            query += " AND EXISTS (SELECT 1 FROM violations v3 WHERE v3.ACTIVITY_NR = i.ACTIVITY_NR AND v3.LATEST_EVENT = ?)"
+            params.append(code)
+
+    # HEARING filter: use CONTEST_DATE as the primary signal for CA contested cases
+    if hearing == 'Yes':
+        query += """ AND EXISTS (
+            SELECT 1 FROM violations v4 WHERE v4.ACTIVITY_NR = i.ACTIVITY_NR AND (
+                (v4.CONTEST_DATE IS NOT NULL AND v4.CONTEST_DATE != '')
+                OR v4.LATEST_EVENT IN ('C', 'F', 'A', 'R')
+            )
+        )"""
+    elif hearing == 'No':
+        query += """ AND NOT EXISTS (
+            SELECT 1 FROM violations v4 WHERE v4.ACTIVITY_NR = i.ACTIVITY_NR AND (
+                (v4.CONTEST_DATE IS NOT NULL AND v4.CONTEST_DATE != '')
+                OR v4.LATEST_EVENT IN ('C', 'F', 'A', 'R')
+            )
+        )"""
 
     query += " GROUP BY i.ACTIVITY_NR ORDER BY i.OPEN_DATE DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
@@ -648,7 +714,27 @@ def read_root():
                     <option value="U">Unclassified</option>
                 </select>
             </div>
+            <div class="input-group">
+                <label>Case Outcome / Latest Event</label>
+                <select id="resolution">
+                    <option value="">Any</option>
+                    <optgroup label="Settlement">
+                        <option value="informal">Informal Settlement (I)</option>
+                        <option value="formal">Formal Settlement (F)</option>
+                    </optgroup>
+                    <optgroup label="Contested / Hearing">
+                        <option value="contested">Contested Case (current status)</option>
+                        <option value="any_hearing">Contested Case (status at any point)</option>
+                        <option value="review_commission">Review Commission (R)</option>
+                        <option value="alj_affirm">ALJ Decision (A)</option>
+                    </optgroup>
+                    <optgroup label="Final">
+                        <option value="final">Final Order Issued</option>
+                    </optgroup>
+                </select>
+            </div>
             <button onclick="performSearch()">Search</button>
+            <button onclick="refreshData()" style="background: var(--card); border: 1px solid var(--primary); color: var(--primary); margin-left: 0.5rem;" id="refresh-btn">Refresh Data</button>
         </div>
 
         <div class="table-container">
@@ -660,10 +746,11 @@ def read_root():
                         <th class="sortable" onclick="sortTable('estab_name')">Employer <span class="sort-icon" id="sort-estab_name"></span></th>
                         <th class="sortable" onclick="sortTable('site_city')">City <span class="sort-icon" id="sort-site_city"></span></th>
                         <th>Violations</th>
+                        <th>Resolution</th>
                     </tr>
                 </thead>
                 <tbody id="resultsBody">
-                    <tr><td colspan="5" class="loading">Enter search criteria and click Search</td></tr>
+                    <tr><td colspan="6" class="loading">Enter search criteria and click Search</td></tr>
                 </tbody>
             </table>
         </div>
@@ -750,6 +837,7 @@ def read_root():
             const invStatusVal = document.getElementById('inv_status').value;
             const hasViolVal = document.getElementById('has_viol').value;
             const activityNrVal = document.getElementById('activity_nr').value;
+            const resolutionVal = document.getElementById('resolution').value;
 
             if (activityNrVal) params.append('activity_nr', activityNrVal);
             if (empVal) params.append('employer', empVal);
@@ -767,6 +855,7 @@ def read_root():
             if (naicsVal) params.append('naics', naicsVal);
             if (invStatusVal) params.append('inv_status', invStatusVal);
             if (hasViolVal) params.append('has_viol', hasViolVal);
+            if (resolutionVal) params.append('resolution', resolutionVal);
 
             try {
                 const response = await fetch(`/api/search?${params}`);
@@ -779,7 +868,7 @@ def read_root():
                 }
 
                 if (data.results.length === 0) {
-                    body.innerHTML = '<tr><td colspan="5" class="loading">No records found matching criteria.</td></tr>';
+                    body.innerHTML = '<tr><td colspan="6" class="loading">No records found matching criteria.</td></tr>';
                     currentResults = [];
                     return;
                 }
@@ -793,7 +882,7 @@ def read_root():
                 renderTable();
 
             } catch (err) {
-                body.innerHTML = `<tr><td colspan="5" class="loading">Error connecting to server. Server may be indexing data... please wait 1 minute and try again.</td></tr>`;
+                body.innerHTML = `<tr><td colspan="6" class="loading">Error connecting to server. Server may be indexing data... please wait 1 minute and try again.</td></tr>`;
                 currentResults = [];
             }
         }
@@ -844,6 +933,23 @@ def read_root():
             renderTable();
         }
 
+        const eventLabels = {
+            'I': 'Informal Settlement',
+            'F': 'Formal Settlement',
+            'C': 'Contested',
+            'W': 'Withdrawn',
+            'P': 'Petition for Modification',
+            'Z': 'No Contest',
+            'A': 'ALJ Decision (A)',
+            'J': 'ALJ Decision (J)',
+            'X': 'Remanded',
+            'R': 'Review Commission',
+            'S': 'Settlement',
+            'D': 'Default',
+            'V': 'Vacated',
+            'B': 'Bargained'
+        };
+
         function renderTable() {
             const body = document.getElementById('resultsBody');
             body.innerHTML = currentResults.map(row => `
@@ -854,6 +960,9 @@ def read_root():
                     <td>${row.SITE_CITY}</td>
                     <td>
                         ${(row.standards || '').split(',').map(s => s.trim() ? `<span class="badge badge-other">${s}</span>` : '').join(' ')}
+                    </td>
+                    <td style="font-size:0.8rem; color:var(--muted)">
+                        ${row.LATEST_EVENT ? (eventLabels[row.LATEST_EVENT] || row.LATEST_EVENT) : '—'}
                     </td>
                 </tr>
             `).join('');
@@ -887,16 +996,17 @@ def read_root():
                             
                             <h3>Basic Info</h3>
                             <div class="detail-item"><div class="detail-label">Type</div><div class="detail-value">
-                                ${i.INSP_TYPE === 'A' ? 'Programmed Planned' : 
-                                  i.INSP_TYPE === 'B' ? 'Programmed Related' : 
-                                  i.INSP_TYPE === 'C' ? 'Unprogrammed Related' : 
-                                  i.INSP_TYPE === 'D' ? 'Unprogrammed Other' : 
-                                  i.INSP_TYPE === 'E' ? 'Fatality/Catastrophe' : 
-                                  i.INSP_TYPE === 'F' ? 'Complaints' : 
-                                  i.INSP_TYPE === 'G' ? 'Referrals' : 
-                                  i.INSP_TYPE === 'H' ? 'FollowUp' : 
-                                  i.INSP_TYPE === 'I' ? 'Unprogrammed Related (FollowUp)' : 
-                                  i.INSP_TYPE === 'J' ? 'Unprogrammed Other (FollowUp)' : 
+                                ${i.INSP_TYPE === 'A' ? 'Accident (A)' : 
+                                  i.INSP_TYPE === 'B' ? 'Complaint (B)' : 
+                                  i.INSP_TYPE === 'C' ? 'Referral (C)' : 
+                                  i.INSP_TYPE === 'D' ? 'Monitoring (D)' : 
+                                  i.INSP_TYPE === 'E' ? 'Variance (E)' : 
+                                  i.INSP_TYPE === 'F' ? 'FollowUp (F)' : 
+                                  i.INSP_TYPE === 'G' ? 'Unprogrammed Related (G)' : 
+                                  i.INSP_TYPE === 'H' ? 'Programmed Planned (H)' : 
+                                  i.INSP_TYPE === 'I' ? 'Programmed Related (I)' : 
+                                  i.INSP_TYPE === 'J' ? 'Unprogrammed Other (J)' : 
+                                  i.INSP_TYPE === 'K' ? 'Programmed Other (K)' : 
                                   i.INSP_TYPE || 'N/A'}
                             </div></div>
                             <div class="detail-item"><div class="detail-label">Union Status</div><div class="detail-value">${i.UNION_STATUS === 'A' ? 'Yes' : i.UNION_STATUS === 'B' ? 'No' : i.UNION_STATUS || 'N/A'}</div></div>
@@ -925,8 +1035,12 @@ def read_root():
                                 </div>
                                 <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.5rem; font-size:0.8rem">
                                     <div style="grid-column: span 2;"><span style="color:var(--muted)">Severity Classification:</span> ${v.VIOL_TYPE === 'S' ? 'Serious' : v.VIOL_TYPE === 'O' ? 'Other' : v.VIOL_TYPE === 'W' ? 'Willful' : v.VIOL_TYPE === 'R' ? 'Repeat' : v.VIOL_TYPE === 'U' ? 'Unclassified' : v.VIOL_TYPE}</div>
-                                    <div><span style="color:var(--muted)">Instances:</span> ${v.NR_INSTANCES || 0}</div>
+                                    <div><span style="color:var(--muted)">Gravity:</span> ${v.GRAVITY ? v.GRAVITY : 'N/A'}</div>
+                                    <div><span style="color:var(--muted)">Event Status:</span> ${v.LATEST_EVENT ? (eventLabels[v.LATEST_EVENT] || v.LATEST_EVENT) : 'N/A'}</div>
+                                    <div><span style="color:var(--muted)">Exposed/Instances:</span> ${v.NR_EXPOSED || 0} / ${v.NR_INSTANCES || 0}</div>
+                                    <div><span style="color:var(--muted)">Contest Date:</span> ${v.CONTEST_DATE ? new Date(v.CONTEST_DATE).toLocaleDateString() : 'N/A'}</div>
                                     <div><span style="color:var(--muted)">Abate Date:</span> ${v.ABATE_DATE ? new Date(v.ABATE_DATE).toLocaleDateString() : 'N/A'}</div>
+                                    <div><span style="color:var(--muted)">Final Order:</span> ${v.FINAL_ORDER_DATE ? new Date(v.FINAL_ORDER_DATE).toLocaleDateString() : 'N/A'}</div>
                                     <div style="grid-column: span 2; margin-top: 0.5rem;"><span style="color:var(--muted)">Initial Fine Assessed:</span> ${parseFloat(v.INITIAL_PENALTY || 0).toLocaleString('en-US', {style:'currency', currency:'USD'})}</div>
                                     <div style="grid-column: span 2;"><span style="color:var(--muted)">Current Fine (Post-Appeals/Settlements):</span> ${parseFloat(v.CURRENT_PENALTY || 0).toLocaleString('en-US', {style:'currency', currency:'USD'})}</div>
                                 </div>
@@ -939,8 +1053,27 @@ def read_root():
             }
         }
 
-        function closeModal() {
-            document.getElementById('modal-overlay').style.display = 'none';
+        async function refreshData() {
+            if (!confirm("This will delete the current database and re-download/re-ingest everything. It takes about 5 minutes. Continue?")) return;
+            
+            const btn = document.getElementById('refresh-btn');
+            btn.disabled = true;
+            btn.innerText = "Refreshing...";
+            
+            try {
+                const res = await fetch('/api/refresh', { method: 'POST' });
+                const data = await res.json();
+                if (data.error) alert(data.error);
+                else {
+                    checkStatus();
+                    alert("Refresh started in background. The dashboard will update when complete.");
+                }
+            } catch (e) {
+                alert("Failed to trigger refresh.");
+            } finally {
+                btn.disabled = false;
+                btn.innerText = "Refresh Data";
+            }
         }
     </script>
 </body>
@@ -949,14 +1082,48 @@ def read_root():
 
 import threading
 
-def run_ingestion():
+def run_ingestion(force=False):
     global ingestion_status
+    
+    # Check if DB is "old" (e.g. missing R cases or newer column like CONTEST_DATE)
+    if not force and os.path.exists(DB_PATH):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            # Check for latest columns
+            cur = conn.execute("PRAGMA table_info(violations)")
+            cols = [c[1] for c in cur.fetchall()]
+            if 'CONTEST_DATE' not in cols or 'LATEST_EVENT' not in cols:
+                print("Old database detected (missing columns). Forcing re-ingestion...")
+                force = True
+            
+            # Check for R cases (crucial for this version)
+            if not force:
+                res = conn.execute("SELECT COUNT(*) FROM violations WHERE LATEST_EVENT = 'R'").fetchone()
+                if not res or res[0] == 0:
+                    # In some datasets, R cases might be rare, but if we have NONE, something is likely wrong with the ingestion
+                    print("No 'Review Commission' cases found. Database may be incomplete. Forcing refresh...")
+                    force = True
+            conn.close()
+        except Exception as e:
+            print(f"Error checking database: {e}. Forcing refresh...")
+            force = True
+
+    if force:
+        if os.path.exists(DB_PATH):
+            import time
+            # Try to remove, but wait if locked
+            for _ in range(5):
+                try: 
+                    os.remove(DB_PATH)
+                    break
+                except: time.sleep(1)
+        
     if not os.path.exists(DB_PATH):
         ingestion_status["status"] = "indexing"
-        print("Database not found. Attempting to download pre-compiled DB from GitHub...")
+        print("Database not found or refresh forced. Attempting to download pre-compiled DB from GitHub...")
         try:
             import download_db
-            success = download_db.download_database()
+            success = download_db.download_database(force=force)
             if success:
                 ingestion_status["status"] = "complete"
                 print("Successfully downloaded DB from GitHub.")

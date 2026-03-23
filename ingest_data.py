@@ -84,7 +84,21 @@ def ingest():
             INITIAL_PENALTY REAL,
             CURRENT_PENALTY REAL,
             ABATE_DATE TEXT,
+            LATEST_EVENT TEXT,
+            FINAL_ORDER_DATE TEXT,
+            CONTEST_DATE TEXT,
+            NR_INSTANCES INTEGER,
+            NR_EXPOSED INTEGER,
+            GRAVITY TEXT,
             FOREIGN KEY(ACTIVITY_NR) REFERENCES inspections(ACTIVITY_NR)
+        )
+    """)
+    
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS events_temp (
+            ACTIVITY_NR TEXT,
+            CITATION_ID TEXT,
+            LATEST_EVENT TEXT
         )
     """)
     
@@ -130,7 +144,10 @@ def ingest():
                             
                         df_ca = df_ca[cols_to_keep]
                         
-                        df_ca.to_sql('inspections', conn, if_exists='append', index=False)
+                        df_ca.drop_duplicates(subset=['ACTIVITY_NR'], inplace=True)
+                        df_ca.to_sql('inspections_temp', conn, if_exists='replace', index=False)
+                        conn.execute("INSERT OR IGNORE INTO inspections SELECT * FROM inspections_temp")
+                        
                         total_insp += len(df_ca)
                         ca_activities.update(df_ca['ACTIVITY_NR'])
         except Exception as e:
@@ -143,7 +160,8 @@ def ingest():
     # Pass 2: Violations (Chunked)
     REQUIRED_VIOL_COLS = [
         'ACTIVITY_NR', 'CITATION_ID', 'STANDARD', 'VIOL_TYPE', 
-        'INITIAL_PENALTY', 'CURRENT_PENALTY', 'ABATE_DATE'
+        'INITIAL_PENALTY', 'CURRENT_PENALTY', 'ABATE_DATE', 'REC', 'FINAL_ORDER_DATE',
+        'CONTEST_DATE', 'NR_INSTANCES', 'NR_EXPOSED', 'GRAVITY'
     ]
 
     for f in all_files:
@@ -160,11 +178,40 @@ def ingest():
                         
                     df_viol = chunk[chunk['ACTIVITY_NR'].isin(ca_activities)].copy()
                     if not df_viol.empty:
-                        cols_to_keep = [c for c in REQUIRED_VIOL_COLS if c in df_viol.columns]
+                        # Rename REC to LATEST_EVENT if it exists (REC is the raw CSV column name)
+                        if 'REC' in df_viol.columns:
+                            df_viol = df_viol.rename(columns={'REC': 'LATEST_EVENT'})
+                        
+                        # Define the target columns for the database
+                        target_cols = ['ACTIVITY_NR', 'CITATION_ID', 'STANDARD', 'VIOL_TYPE', 
+                                      'INITIAL_PENALTY', 'CURRENT_PENALTY', 'ABATE_DATE', 
+                                      'LATEST_EVENT', 'FINAL_ORDER_DATE',
+                                      'CONTEST_DATE', 'NR_INSTANCES', 'NR_EXPOSED', 'GRAVITY']
+                        
+                        # Only keep columns that are actually in the dataframe
+                        cols_to_keep = [c for c in target_cols if c in df_viol.columns]
                         df_viol = df_viol[cols_to_keep]
+                        
                         
                         df_viol.to_sql('violations', conn, if_exists='append', index=False)
                         total_viol += len(df_viol)
+            
+            elif act_col and 'REC' in sample.columns and ('STANDARD' not in sample.columns):
+                reader = pd.read_csv(f, chunksize=20000, low_memory=False)
+                for chunk in reader:
+                    if act_col and act_col != 'ACTIVITY_NR':
+                        chunk = chunk.rename(columns={act_col: 'ACTIVITY_NR'})
+                        
+                    df_evt = chunk[chunk['ACTIVITY_NR'].isin(ca_activities)].copy()
+                    if not df_evt.empty:
+                        df_evt = df_evt.rename(columns={'REC': 'LATEST_EVENT'})
+                        
+                        target_cols = ['ACTIVITY_NR', 'CITATION_ID', 'LATEST_EVENT']
+                        cols_to_keep = [c for c in target_cols if c in df_evt.columns]
+                        df_evt = df_evt[cols_to_keep]
+                        
+                        df_evt.to_sql('events_temp', conn, if_exists='append', index=False)
+
         except Exception as e:
             import traceback
             print(f"Error in violation pass for {f}: {e}")
@@ -174,9 +221,87 @@ def ingest():
         conn.execute("CREATE INDEX idx_insp_act ON inspections(ACTIVITY_NR)")
         conn.execute("CREATE INDEX idx_viol_act ON violations(ACTIVITY_NR)")
         conn.execute("CREATE INDEX idx_insp_name ON inspections(ESTAB_NAME)")
+        
+        # Merge event codes from events_temp into violations
+        conn.execute("CREATE INDEX idx_evt_temp ON events_temp(ACTIVITY_NR, CITATION_ID)")
+        
+        # Priority order for updating LATEST_EVENT: R > J/A > F > I
+        # 'R' is Review Commission (Highest appeal level)
+        conn.execute("""
+            UPDATE violations
+            SET LATEST_EVENT = 'R'
+            WHERE EXISTS (
+                SELECT 1 FROM events_temp 
+                WHERE events_temp.ACTIVITY_NR = violations.ACTIVITY_NR 
+                  AND (events_temp.CITATION_ID = violations.CITATION_ID OR events_temp.CITATION_ID IS NULL)
+                  AND events_temp.LATEST_EVENT = 'R'
+            )
+            AND (LATEST_EVENT != 'R' OR LATEST_EVENT IS NULL)
+        """)
+
+        # 'J' is ALJ Decision
+        conn.execute("""
+            UPDATE violations
+            SET LATEST_EVENT = 'J'
+            WHERE EXISTS (
+                SELECT 1 FROM events_temp 
+                WHERE events_temp.ACTIVITY_NR = violations.ACTIVITY_NR 
+                  AND (events_temp.CITATION_ID = violations.CITATION_ID OR events_temp.CITATION_ID IS NULL)
+                  AND events_temp.LATEST_EVENT = 'J'
+            )
+            AND (LATEST_EVENT NOT IN ('R', 'J') OR LATEST_EVENT IS NULL)
+        """)
+        
+        # 'A' is ALJ Affirm
+        conn.execute("""
+            UPDATE violations
+            SET LATEST_EVENT = 'A'
+            WHERE EXISTS (
+                SELECT 1 FROM events_temp 
+                WHERE events_temp.ACTIVITY_NR = violations.ACTIVITY_NR 
+                  AND (events_temp.CITATION_ID = violations.CITATION_ID OR events_temp.CITATION_ID IS NULL)
+                  AND events_temp.LATEST_EVENT = 'A'
+            )
+            AND (LATEST_EVENT NOT IN ('R', 'J', 'A') OR LATEST_EVENT IS NULL)
+        """)
+
+        # 'F' is Formal Settlement
+        conn.execute("""
+            UPDATE violations
+            SET LATEST_EVENT = 'F'
+            WHERE EXISTS (
+                SELECT 1 FROM events_temp 
+                WHERE events_temp.ACTIVITY_NR = violations.ACTIVITY_NR 
+                  AND (events_temp.CITATION_ID = violations.CITATION_ID OR events_temp.CITATION_ID IS NULL)
+                  AND events_temp.LATEST_EVENT = 'F'
+            )
+            AND (LATEST_EVENT NOT IN ('R', 'J', 'A', 'F') OR LATEST_EVENT IS NULL)
+        """)
+
+        # 'I' is Informal Settlement
+        conn.execute("""
+            UPDATE violations
+            SET LATEST_EVENT = 'I'
+            WHERE EXISTS (
+                SELECT 1 FROM events_temp 
+                WHERE events_temp.ACTIVITY_NR = violations.ACTIVITY_NR 
+                  AND (events_temp.CITATION_ID = violations.CITATION_ID OR events_temp.CITATION_ID IS NULL)
+                  AND events_temp.LATEST_EVENT = 'I'
+            )
+            AND (LATEST_EVENT NOT IN ('R', 'J', 'A', 'F', 'I') OR LATEST_EVENT IS NULL)
+        """)
+        
+        conn.execute("DROP TABLE events_temp")
     
     conn.commit()
     conn.close()
+
+    # Load industry code mapping tables (SIC/NAICS titles)
+    try:
+        import load_industry_codes
+        load_industry_codes.load_industry_codes()
+    except Exception as e:
+        print(f"Warning: Industry codes could not be loaded: {e}")
 
     # CRITICAL: Clean up large CSV files to save Render disk space
     print("Ingestion complete. Cleaning up raw CSV files...")
