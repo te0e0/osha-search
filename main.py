@@ -1053,6 +1053,10 @@ def read_root():
             }
         }
 
+        function closeModal() {
+            document.getElementById('modal-overlay').style.display = 'none';
+        }
+
         async function refreshData() {
             if (!confirm("This will delete the current database and re-download/re-ingest everything. It takes about 5 minutes. Continue?")) return;
             
