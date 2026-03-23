@@ -8,7 +8,7 @@ import shutil
 # We'll dynamically construct the URL using the repository environment variable on Render,
 # but for now, we'll configure it to match the 'latest-db' tag created by our GitHub Action.
 # Make sure to replace yourusername below!
-GITHUB_RELEASE_ZIP_URL = "https://github.com/te0e0/osha-search/releases/download/latest-db/osha_ca.zip"
+GITHUB_RELEASE_ZIP_URL = "https://github.com/xgcoh/osha-search/releases/download/latest-db/osha_ca.zip"
 DB_FILE_NAME = "osha_ca.db"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE_PATH = os.path.join(SCRIPT_DIR, DB_FILE_NAME)

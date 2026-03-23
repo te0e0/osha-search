@@ -308,6 +308,8 @@ def search_inspections(
     except Exception as e:
         if "no such table" in str(e).lower():
             return {"error": "Data is still indexing... check back in 1 minute.", "results": []}
+        if "no such column" in str(e).lower():
+            return {"error": "Newer database version required. Click 'Refresh Data' to update (takes 1-2 mins).", "results": []}
         return {"error": f"Search failed: {str(e)}", "results": []}
     finally:
         conn.close()
