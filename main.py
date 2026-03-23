@@ -70,6 +70,8 @@ def search_inspections(
     sic: Optional[str] = None,
     naics: Optional[str] = None,
     activity_nr: Optional[str] = None,
+    resolution: Optional[str] = None,
+    hearing: Optional[str] = None,
     limit: int = 50,
     offset: int = 0
 ):
@@ -78,7 +80,10 @@ def search_inspections(
         return {"error": "Index still building... give it 5 minutes.", "results": []}
 
     query = """
-    SELECT i.*, GROUP_CONCAT(v.STANDARD) as standards, GROUP_CONCAT(v.VIOL_TYPE) as severities
+    SELECT i.*, 
+           GROUP_CONCAT(DISTINCT v.STANDARD) as standards, 
+           GROUP_CONCAT(DISTINCT v.VIOL_TYPE) as severities,
+           MAX(v.LATEST_EVENT) as LATEST_EVENT
     FROM inspections i
     LEFT JOIN violations v ON i.ACTIVITY_NR = v.ACTIVITY_NR
     WHERE 1=1
@@ -224,6 +229,57 @@ def search_inspections(
         else:
             query += " AND i.ACTIVITY_NR LIKE ?"
             params.append(f"%{activity_nr}%")
+
+    if resolution:
+        resolution_map = {
+            "informal":  "I",
+            "formal":    "F",
+            "alj_affirm": "A",
+            "review_commission": "R",
+        }
+        if resolution == "final":
+            # Has a final order date on any violation
+            query += " AND EXISTS (SELECT 1 FROM violations v3 WHERE v3.ACTIVITY_NR = i.ACTIVITY_NR AND v3.FINAL_ORDER_DATE IS NOT NULL AND v3.FINAL_ORDER_DATE != '')"
+        elif resolution == "contested":
+            # Use CONTEST_DATE (set when employer formally contests) OR LATEST_EVENT code C
+            query += """ AND EXISTS (
+                SELECT 1 FROM violations v3 WHERE v3.ACTIVITY_NR = i.ACTIVITY_NR AND (
+                    (v3.CONTEST_DATE IS NOT NULL AND v3.CONTEST_DATE != '')
+                    OR v3.LATEST_EVENT = 'C'
+                )
+            )"""
+        elif resolution == "any_hearing":
+            # Any case that went to a formal hearing stage
+            # Use CONTEST_DATE as primary signal for CA + LATEST_EVENT codes for federal
+            hearing_codes = ('C', 'A', 'F', 'R', 'J')
+            placeholders = ','.join('?' for _ in hearing_codes)
+            query += f""" AND EXISTS (
+                SELECT 1 FROM violations v3 WHERE v3.ACTIVITY_NR = i.ACTIVITY_NR AND (
+                    (v3.CONTEST_DATE IS NOT NULL AND v3.CONTEST_DATE != '')
+                    OR v3.LATEST_EVENT IN ({placeholders})
+                )
+            )"""
+            params.extend(hearing_codes)
+        elif resolution in resolution_map:
+            code = resolution_map[resolution]
+            query += " AND EXISTS (SELECT 1 FROM violations v3 WHERE v3.ACTIVITY_NR = i.ACTIVITY_NR AND v3.LATEST_EVENT = ?)"
+            params.append(code)
+
+    # HEARING filter: use CONTEST_DATE as the primary signal for CA contested cases
+    if hearing == 'Yes':
+        query += """ AND EXISTS (
+            SELECT 1 FROM violations v4 WHERE v4.ACTIVITY_NR = i.ACTIVITY_NR AND (
+                (v4.CONTEST_DATE IS NOT NULL AND v4.CONTEST_DATE != '')
+                OR v4.LATEST_EVENT IN ('C', 'F', 'A', 'R')
+            )
+        )"""
+    elif hearing == 'No':
+        query += """ AND NOT EXISTS (
+            SELECT 1 FROM violations v4 WHERE v4.ACTIVITY_NR = i.ACTIVITY_NR AND (
+                (v4.CONTEST_DATE IS NOT NULL AND v4.CONTEST_DATE != '')
+                OR v4.LATEST_EVENT IN ('C', 'F', 'A', 'R')
+            )
+        )"""
 
     query += " GROUP BY i.ACTIVITY_NR ORDER BY i.OPEN_DATE DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
@@ -648,6 +704,25 @@ def read_root():
                     <option value="U">Unclassified</option>
                 </select>
             </div>
+            <div class="input-group">
+                <label>Case Outcome / Latest Event</label>
+                <select id="resolution">
+                    <option value="">Any</option>
+                    <optgroup label="Settlement">
+                        <option value="informal">Informal Settlement (I)</option>
+                        <option value="formal">Formal Settlement (F)</option>
+                    </optgroup>
+                    <optgroup label="Contested / Hearing">
+                        <option value="contested">Contested Case (current status)</option>
+                        <option value="any_hearing">Contested Case (status at any point)</option>
+                        <option value="review_commission">Review Commission (R)</option>
+                        <option value="alj_affirm">ALJ Decision (A)</option>
+                    </optgroup>
+                    <optgroup label="Final">
+                        <option value="final">Final Order Issued</option>
+                    </optgroup>
+                </select>
+            </div>
             <button onclick="performSearch()">Search</button>
         </div>
 
@@ -660,10 +735,11 @@ def read_root():
                         <th class="sortable" onclick="sortTable('estab_name')">Employer <span class="sort-icon" id="sort-estab_name"></span></th>
                         <th class="sortable" onclick="sortTable('site_city')">City <span class="sort-icon" id="sort-site_city"></span></th>
                         <th>Violations</th>
+                        <th>Resolution</th>
                     </tr>
                 </thead>
                 <tbody id="resultsBody">
-                    <tr><td colspan="5" class="loading">Enter search criteria and click Search</td></tr>
+                    <tr><td colspan="6" class="loading">Enter search criteria and click Search</td></tr>
                 </tbody>
             </table>
         </div>
@@ -750,6 +826,7 @@ def read_root():
             const invStatusVal = document.getElementById('inv_status').value;
             const hasViolVal = document.getElementById('has_viol').value;
             const activityNrVal = document.getElementById('activity_nr').value;
+            const resolutionVal = document.getElementById('resolution').value;
 
             if (activityNrVal) params.append('activity_nr', activityNrVal);
             if (empVal) params.append('employer', empVal);
@@ -767,6 +844,7 @@ def read_root():
             if (naicsVal) params.append('naics', naicsVal);
             if (invStatusVal) params.append('inv_status', invStatusVal);
             if (hasViolVal) params.append('has_viol', hasViolVal);
+            if (resolutionVal) params.append('resolution', resolutionVal);
 
             try {
                 const response = await fetch(`/api/search?${params}`);
@@ -779,7 +857,7 @@ def read_root():
                 }
 
                 if (data.results.length === 0) {
-                    body.innerHTML = '<tr><td colspan="5" class="loading">No records found matching criteria.</td></tr>';
+                    body.innerHTML = '<tr><td colspan="6" class="loading">No records found matching criteria.</td></tr>';
                     currentResults = [];
                     return;
                 }
@@ -793,7 +871,7 @@ def read_root():
                 renderTable();
 
             } catch (err) {
-                body.innerHTML = `<tr><td colspan="5" class="loading">Error connecting to server. Server may be indexing data... please wait 1 minute and try again.</td></tr>`;
+                body.innerHTML = `<tr><td colspan="6" class="loading">Error connecting to server. Server may be indexing data... please wait 1 minute and try again.</td></tr>`;
                 currentResults = [];
             }
         }
@@ -844,6 +922,23 @@ def read_root():
             renderTable();
         }
 
+        const eventLabels = {
+            'I': 'Informal Settlement',
+            'F': 'Formal Settlement',
+            'C': 'Contested',
+            'W': 'Withdrawn',
+            'P': 'Petition for Modification',
+            'Z': 'No Contest',
+            'A': 'ALJ Decision (A)',
+            'J': 'ALJ Decision (J)',
+            'X': 'Remanded',
+            'R': 'Review Commission',
+            'S': 'Settlement',
+            'D': 'Default',
+            'V': 'Vacated',
+            'B': 'Bargained'
+        };
+
         function renderTable() {
             const body = document.getElementById('resultsBody');
             body.innerHTML = currentResults.map(row => `
@@ -854,6 +949,9 @@ def read_root():
                     <td>${row.SITE_CITY}</td>
                     <td>
                         ${(row.standards || '').split(',').map(s => s.trim() ? `<span class="badge badge-other">${s}</span>` : '').join(' ')}
+                    </td>
+                    <td style="font-size:0.8rem; color:var(--muted)">
+                        ${row.LATEST_EVENT ? (eventLabels[row.LATEST_EVENT] || row.LATEST_EVENT) : '—'}
                     </td>
                 </tr>
             `).join('');
@@ -925,8 +1023,12 @@ def read_root():
                                 </div>
                                 <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.5rem; font-size:0.8rem">
                                     <div style="grid-column: span 2;"><span style="color:var(--muted)">Severity Classification:</span> ${v.VIOL_TYPE === 'S' ? 'Serious' : v.VIOL_TYPE === 'O' ? 'Other' : v.VIOL_TYPE === 'W' ? 'Willful' : v.VIOL_TYPE === 'R' ? 'Repeat' : v.VIOL_TYPE === 'U' ? 'Unclassified' : v.VIOL_TYPE}</div>
-                                    <div><span style="color:var(--muted)">Instances:</span> ${v.NR_INSTANCES || 0}</div>
+                                    <div><span style="color:var(--muted)">Gravity:</span> ${v.GRAVITY ? v.GRAVITY : 'N/A'}</div>
+                                    <div><span style="color:var(--muted)">Event Status:</span> ${v.LATEST_EVENT ? (eventLabels[v.LATEST_EVENT] || v.LATEST_EVENT) : 'N/A'}</div>
+                                    <div><span style="color:var(--muted)">Exposed/Instances:</span> ${v.NR_EXPOSED || 0} / ${v.NR_INSTANCES || 0}</div>
+                                    <div><span style="color:var(--muted)">Contest Date:</span> ${v.CONTEST_DATE ? new Date(v.CONTEST_DATE).toLocaleDateString() : 'N/A'}</div>
                                     <div><span style="color:var(--muted)">Abate Date:</span> ${v.ABATE_DATE ? new Date(v.ABATE_DATE).toLocaleDateString() : 'N/A'}</div>
+                                    <div><span style="color:var(--muted)">Final Order:</span> ${v.FINAL_ORDER_DATE ? new Date(v.FINAL_ORDER_DATE).toLocaleDateString() : 'N/A'}</div>
                                     <div style="grid-column: span 2; margin-top: 0.5rem;"><span style="color:var(--muted)">Initial Fine Assessed:</span> ${parseFloat(v.INITIAL_PENALTY || 0).toLocaleString('en-US', {style:'currency', currency:'USD'})}</div>
                                     <div style="grid-column: span 2;"><span style="color:var(--muted)">Current Fine (Post-Appeals/Settlements):</span> ${parseFloat(v.CURRENT_PENALTY || 0).toLocaleString('en-US', {style:'currency', currency:'USD'})}</div>
                                 </div>
