@@ -736,7 +736,6 @@ def read_root():
                 </select>
             </div>
             <button onclick="performSearch()">Search</button>
-            <button onclick="refreshData()" style="background: var(--card); border: 1px solid var(--primary); color: var(--primary); margin-left: 0.5rem;" id="refresh-btn">Refresh Data</button>
         </div>
 
         <div class="table-container">
@@ -1059,28 +1058,6 @@ def read_root():
             document.getElementById('modal-overlay').style.display = 'none';
         }
 
-        async function refreshData() {
-            if (!confirm("This will delete the current database and re-download/re-ingest everything. It takes about 5 minutes. Continue?")) return;
-            
-            const btn = document.getElementById('refresh-btn');
-            btn.disabled = true;
-            btn.innerText = "Refreshing...";
-            
-            try {
-                const res = await fetch('/api/refresh', { method: 'POST' });
-                const data = await res.json();
-                if (data.error) alert(data.error);
-                else {
-                    checkStatus();
-                    alert("Refresh started in background. The dashboard will update when complete.");
-                }
-            } catch (e) {
-                alert("Failed to trigger refresh.");
-            } finally {
-                btn.disabled = false;
-                btn.innerText = "Refresh Data";
-            }
-        }
     </script>
 </body>
 </html>
