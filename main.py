@@ -727,7 +727,7 @@ def read_root():
                     <optgroup label="Contested / Hearing">
                         <option value="contested">Contested Case (current status)</option>
                         <option value="any_hearing">Contested Case (status at any point)</option>
-                        <option value="review_commission">the Board</option>
+                        <option value="review_commission">The Board</option>
                         <option value="alj_affirm">ALJ Decision</option>
                     </optgroup>
                     <optgroup label="Final">
@@ -944,7 +944,7 @@ def read_root():
             'A': 'ALJ Decision',
             'J': 'ALJ Decision',
             'X': 'Remanded',
-            'R': 'the Board',
+            'R': 'The Board',
             'S': 'Settlement',
             'D': 'Default',
             'V': 'Vacated',
