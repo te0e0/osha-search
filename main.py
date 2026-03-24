@@ -621,17 +621,17 @@ def read_root():
                 <label>Inspection Type</label>
                 <select id="insp_type">
                     <option value="">Any</option>
-                    <option value="A">Accident (A)</option>
-                    <option value="B">Complaint (B)</option>
-                    <option value="C">Referral (C)</option>
-                    <option value="D">Monitoring (D)</option>
-                    <option value="E">Variance (E)</option>
-                    <option value="F">FollowUp (F)</option>
-                    <option value="G">Unprogrammed Related (G)</option>
-                    <option value="H">Programmed Planned (H)</option>
-                    <option value="I">Programmed Related (I)</option>
-                    <option value="J">Unprogrammed Other (J)</option>
-                    <option value="K">Programmed Other (K)</option>
+                    <option value="A">Accident</option>
+                    <option value="B">Complaint</option>
+                    <option value="C">Referral</option>
+                    <option value="D">Monitoring</option>
+                    <option value="E">Variance</option>
+                    <option value="F">FollowUp</option>
+                    <option value="G">Unprogrammed Related</option>
+                    <option value="H">Programmed Planned</option>
+                    <option value="I">Programmed Related</option>
+                    <option value="J">Unprogrammed Other</option>
+                    <option value="K">Programmed Other</option>
                 </select>
             </div>
             <div class="input-group">
@@ -721,14 +721,14 @@ def read_root():
                 <select id="resolution">
                     <option value="">Any</option>
                     <optgroup label="Settlement">
-                        <option value="informal">Informal Settlement (I)</option>
-                        <option value="formal">Formal Settlement (F)</option>
+                        <option value="informal">Informal Settlement</option>
+                        <option value="formal">Formal Settlement</option>
                     </optgroup>
                     <optgroup label="Contested / Hearing">
                         <option value="contested">Contested Case (current status)</option>
                         <option value="any_hearing">Contested Case (status at any point)</option>
-                        <option value="review_commission">the Board (R)</option>
-                        <option value="alj_affirm">ALJ Decision (A)</option>
+                        <option value="review_commission">the Board</option>
+                        <option value="alj_affirm">ALJ Decision</option>
                     </optgroup>
                     <optgroup label="Final">
                         <option value="final">Final Order Issued</option>
@@ -941,8 +941,8 @@ def read_root():
             'W': 'Withdrawn',
             'P': 'Petition for Modification',
             'Z': 'No Contest',
-            'A': 'ALJ Decision (A)',
-            'J': 'ALJ Decision (J)',
+            'A': 'ALJ Decision',
+            'J': 'ALJ Decision',
             'X': 'Remanded',
             'R': 'the Board',
             'S': 'Settlement',
@@ -997,17 +997,17 @@ def read_root():
                             
                             <h3>Basic Info</h3>
                             <div class="detail-item"><div class="detail-label">Type</div><div class="detail-value">
-                                ${i.INSP_TYPE === 'A' ? 'Accident (A)' : 
-                                  i.INSP_TYPE === 'B' ? 'Complaint (B)' : 
-                                  i.INSP_TYPE === 'C' ? 'Referral (C)' : 
-                                  i.INSP_TYPE === 'D' ? 'Monitoring (D)' : 
-                                  i.INSP_TYPE === 'E' ? 'Variance (E)' : 
-                                  i.INSP_TYPE === 'F' ? 'FollowUp (F)' : 
-                                  i.INSP_TYPE === 'G' ? 'Unprogrammed Related (G)' : 
-                                  i.INSP_TYPE === 'H' ? 'Programmed Planned (H)' : 
-                                  i.INSP_TYPE === 'I' ? 'Programmed Related (I)' : 
-                                  i.INSP_TYPE === 'J' ? 'Unprogrammed Other (J)' : 
-                                  i.INSP_TYPE === 'K' ? 'Programmed Other (K)' : 
+                                ${i.INSP_TYPE === 'A' ? 'Accident' : 
+                                  i.INSP_TYPE === 'B' ? 'Complaint' : 
+                                  i.INSP_TYPE === 'C' ? 'Referral' : 
+                                  i.INSP_TYPE === 'D' ? 'Monitoring' : 
+                                  i.INSP_TYPE === 'E' ? 'Variance' : 
+                                  i.INSP_TYPE === 'F' ? 'FollowUp' : 
+                                  i.INSP_TYPE === 'G' ? 'Unprogrammed Related' : 
+                                  i.INSP_TYPE === 'H' ? 'Programmed Planned' : 
+                                  i.INSP_TYPE === 'I' ? 'Programmed Related' : 
+                                  i.INSP_TYPE === 'J' ? 'Unprogrammed Other' : 
+                                  i.INSP_TYPE === 'K' ? 'Programmed Other' : 
                                   i.INSP_TYPE || 'N/A'}
                             </div></div>
                             <div class="detail-item"><div class="detail-label">Union Status</div><div class="detail-value">${i.UNION_STATUS === 'A' ? 'Yes' : i.UNION_STATUS === 'B' ? 'No' : i.UNION_STATUS || 'N/A'}</div></div>
